@@ -221,13 +221,25 @@ export class TaskManager {
     const record = this.store.get(taskId);
     if (!record) return false;
 
+    // Idempotent: already cancelled
     if (record.state === "CANCELLED") return true;
+
+    // Completed or failed tasks cannot be cancelled
     if (record.state === "COMPLETED" || record.state === "FAILED") return false;
 
+    // Must be in RUNNING state
+    if (record.state !== "RUNNING") return false;
+
+    // Must have an active executorSessionId
     const sessionId = record.executorSessionId;
-    if (sessionId) {
+    if (!sessionId) return false;
+
+    try {
       const ok = await this.executor.cancel(taskId, sessionId);
       if (!ok) return false;
+    } catch {
+      // If interrupt throws an exception, do not fake state as CANCELLED
+      return false;
     }
 
     this.store.update(taskId, {

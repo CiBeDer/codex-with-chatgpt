@@ -166,6 +166,96 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
     expect(cancelledRecord?.state).toBe("CANCELLED");
   });
 
+  it("cancel adheres to interrupt outcome and status constraints", async () => {
+    let shouldInterruptSucceed = true;
+    let shouldInterruptThrow = false;
+
+    const mockExecutor: Executor = {
+      health: async () => true,
+      ensureSession: async () => "ses_int_test",
+      execute: () => new Promise<ExecutionResult>(() => {}), // stays running
+      cancel: async () => {
+        if (shouldInterruptThrow) {
+          throw new Error("Network interrupt error");
+        }
+        return shouldInterruptSucceed;
+      },
+    };
+
+    const manager = new TaskManager({ store, executor: mockExecutor });
+
+    // Case 1: Non-existent task -> false
+    expect(await manager.cancel("non_existent")).toBe(false);
+
+    // Case 2: Task created but no session yet (not RUNNING) -> false
+    await manager.create({
+      taskId: "task_unstarted",
+      workspacePath: "/repo/test",
+      goal: "G",
+      plan: "P",
+    });
+    expect(await manager.cancel("task_unstarted")).toBe(false);
+
+    // Case 3: Interrupt fails (false) -> returns false and state remains RUNNING
+    await manager.create({
+      taskId: "task_int_fail",
+      workspacePath: "/repo/test",
+      goal: "G",
+      plan: "P",
+    });
+    manager.execute("task_int_fail");
+    await new Promise((r) => setTimeout(r, 10));
+
+    shouldInterruptSucceed = false;
+    const cancelRes1 = await manager.cancel("task_int_fail");
+    expect(cancelRes1).toBe(false);
+    expect((await manager.get("task_int_fail"))?.state).toBe("RUNNING");
+
+    // Case 4: Interrupt throws -> returns false and state remains RUNNING
+    shouldInterruptThrow = true;
+    const cancelRes2 = await manager.cancel("task_int_fail");
+    expect(cancelRes2).toBe(false);
+    expect((await manager.get("task_int_fail"))?.state).toBe("RUNNING");
+
+    // Case 5: Interrupt succeeds -> returns true and state becomes CANCELLED
+    shouldInterruptThrow = false;
+    shouldInterruptSucceed = true;
+    const cancelRes3 = await manager.cancel("task_int_fail");
+    expect(cancelRes3).toBe(true);
+    expect((await manager.get("task_int_fail"))?.state).toBe("CANCELLED");
+
+    // Case 6: Already cancelled -> idempotent returns true
+    expect(await manager.cancel("task_int_fail")).toBe(true);
+
+    // Case 7: Task already completed -> cancel returns false
+    store.save({
+      version: 1,
+      taskId: "task_done",
+      workspaceId: store.workspaceId,
+      goal: "G",
+      plan: "P",
+      iteration: 1,
+      state: "COMPLETED",
+      executor: "opencode",
+      createdAt: 1000,
+    });
+    expect(await manager.cancel("task_done")).toBe(false);
+
+    // Case 8: Task already failed -> cancel returns false
+    store.save({
+      version: 1,
+      taskId: "task_failed",
+      workspaceId: store.workspaceId,
+      goal: "G",
+      plan: "P",
+      iteration: 1,
+      state: "FAILED",
+      executor: "opencode",
+      createdAt: 1000,
+    });
+    expect(await manager.cancel("task_failed")).toBe(false);
+  });
+
   it("retains executorSessionId across TaskManager instances and across iterations without re-creating session", async () => {
     let ensureSessionCalls = 0;
     const executedSessions: string[] = [];
