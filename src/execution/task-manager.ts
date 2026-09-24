@@ -5,6 +5,7 @@ import type { ExecutionRequest, ExecutionResult, ExecutionState } from "../execu
 
 export interface CreateTaskOptions {
   taskId: string;
+  workspaceId?: string;
   workspacePath: string;
   goal: string;
   plan: string;
@@ -13,17 +14,23 @@ export interface CreateTaskOptions {
 }
 
 export interface TaskManagerOptions {
+  workspaceId?: string;
+  workspacePath?: string;
   store?: TaskStore;
   executor?: Executor;
 }
 
 export class TaskManager {
+  readonly workspaceId: string;
+  readonly workspacePath?: string;
   private store: TaskStore;
   private executor: Executor;
   private activeExecutions = new Map<string, Promise<ExecutionResult>>();
 
   constructor(opts: TaskManagerOptions = {}) {
-    this.store = opts.store ?? new TaskStore();
+    this.workspaceId = opts.workspaceId ?? opts.store?.workspaceId ?? "default";
+    this.workspacePath = opts.workspacePath;
+    this.store = opts.store ?? new TaskStore({ workspaceId: this.workspaceId });
     this.executor = opts.executor ?? new OpenCodeExecutor();
   }
 
@@ -34,6 +41,7 @@ export class TaskManager {
     const record: TaskRecord = {
       version: 1,
       taskId: opts.taskId,
+      workspaceId: this.workspaceId,
       workspacePath: opts.workspacePath,
       goal: opts.goal,
       plan: opts.plan,

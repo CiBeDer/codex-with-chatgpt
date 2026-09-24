@@ -13,7 +13,7 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-task-manager-test-"));
-    store = new TaskStore({ stateDir: tmpDir });
+    store = new TaskStore({ stateDir: tmpDir, workspaceId: "ws_test_mgr" });
   });
 
   afterEach(() => {
@@ -205,7 +205,7 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
     expect(executedSessions[0]).toBe("ses_stable_session_42");
 
     // Second instance (e.g. process restarted with same TaskStore): Iteration 2
-    const freshStore = new TaskStore({ stateDir: tmpDir });
+    const freshStore = new TaskStore({ stateDir: tmpDir, workspaceId: "ws_test_mgr" });
     const manager2 = new TaskManager({ store: freshStore, executor: mockExecutor });
 
     await manager2.create({

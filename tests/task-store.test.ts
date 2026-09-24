@@ -5,23 +5,24 @@ import os from "node:os";
 import { TaskStore } from "../src/execution/task-store.js";
 import type { TaskRecord } from "../src/execution/task-store.js";
 
-describe("TaskStore (Phase 5)", () => {
+describe("TaskStore (Phase R3 Workspace Isolation)", () => {
   let tmpDir: string;
   let store: TaskStore;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "c2c-task-store-test-"));
-    store = new TaskStore({ stateDir: tmpDir });
+    store = new TaskStore({ stateDir: tmpDir, workspaceId: "ws_alpha" });
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("save and load task record", () => {
+  it("save and load task record scoped to workspace", () => {
     const record: TaskRecord = {
       version: 1,
       taskId: "task_123",
+      workspaceId: "ws_alpha",
       workspacePath: "/test/workspace",
       goal: "Fix bug",
       plan: "Do changes",
@@ -34,12 +35,78 @@ describe("TaskStore (Phase 5)", () => {
     store.save(record);
     const loaded = store.get("task_123");
     expect(loaded).toEqual(record);
+
+    // Check directory layout: tasks/<workspaceId>/<taskId>.json
+    const expectedPath = path.join(tmpDir, "tasks", "ws_alpha", "task_123.json");
+    expect(fs.existsSync(expectedPath)).toBe(true);
   });
 
-  it("updates task record atomically", () => {
+  it("isolates tasks between different workspaces with same taskId", () => {
+    const storeBeta = new TaskStore({ stateDir: tmpDir, workspaceId: "ws_beta" });
+
+    const recordAlpha: TaskRecord = {
+      version: 1,
+      taskId: "task_shared_id",
+      workspaceId: "ws_alpha",
+      workspacePath: "/repo/alpha",
+      goal: "Alpha goal",
+      plan: "Alpha plan",
+      iteration: 1,
+      state: "CREATED",
+      executor: "opencode",
+      createdAt: 1000,
+    };
+
+    const recordBeta: TaskRecord = {
+      version: 1,
+      taskId: "task_shared_id",
+      workspaceId: "ws_beta",
+      workspacePath: "/repo/beta",
+      goal: "Beta goal",
+      plan: "Beta plan",
+      iteration: 1,
+      state: "RUNNING",
+      executor: "opencode",
+      createdAt: 2000,
+    };
+
+    store.save(recordAlpha);
+    storeBeta.save(recordBeta);
+
+    const loadedAlpha = store.get("task_shared_id");
+    const loadedBeta = storeBeta.get("task_shared_id");
+
+    expect(loadedAlpha?.workspaceId).toBe("ws_alpha");
+    expect(loadedAlpha?.workspacePath).toBe("/repo/alpha");
+    expect(loadedAlpha?.state).toBe("CREATED");
+
+    expect(loadedBeta?.workspaceId).toBe("ws_beta");
+    expect(loadedBeta?.workspacePath).toBe("/repo/beta");
+    expect(loadedBeta?.state).toBe("RUNNING");
+  });
+
+  it("rejects saving a record with mismatched workspaceId", () => {
+    const mismatchRecord: TaskRecord = {
+      version: 1,
+      taskId: "task_mismatch",
+      workspaceId: "ws_different",
+      workspacePath: "/test",
+      goal: "g",
+      plan: "p",
+      iteration: 1,
+      state: "CREATED",
+      executor: "opencode",
+      createdAt: Date.now(),
+    };
+
+    expect(() => store.save(mismatchRecord)).toThrowError(/workspaceId mismatch/);
+  });
+
+  it("updates task record atomically within workspace", () => {
     const record: TaskRecord = {
       version: 1,
       taskId: "task_update_1",
+      workspaceId: "ws_alpha",
       workspacePath: "/test/workspace",
       goal: "Fix bug",
       plan: "Do changes",
@@ -62,10 +129,11 @@ describe("TaskStore (Phase 5)", () => {
     expect(updated?.startedAt).toBeDefined();
   });
 
-  it("restart simulation: re-instantiated store loads previously written tasks", () => {
+  it("restart simulation: re-instantiated store loads previously written tasks for workspace", () => {
     const record: TaskRecord = {
       version: 1,
       taskId: "task_restart",
+      workspaceId: "ws_alpha",
       workspacePath: "/test/workspace",
       goal: "Restart goal",
       plan: "Restart plan",
@@ -78,7 +146,7 @@ describe("TaskStore (Phase 5)", () => {
     };
     store.save(record);
 
-    const newStoreInstance = new TaskStore({ stateDir: tmpDir });
+    const newStoreInstance = new TaskStore({ stateDir: tmpDir, workspaceId: "ws_alpha" });
     const loaded = newStoreInstance.get("task_restart");
     expect(loaded).toEqual(record);
   });
@@ -91,6 +159,7 @@ describe("TaskStore (Phase 5)", () => {
         store.save({
           version: 1,
           taskId: id,
+          workspaceId: "ws_alpha",
           workspacePath: "/test",
           goal: "g",
           plan: "p",
@@ -106,7 +175,7 @@ describe("TaskStore (Phase 5)", () => {
   });
 
   it("handles corrupted json gracefully by returning null", () => {
-    const file = path.join(tmpDir, "tasks", "task_corrupt.json");
+    const file = path.join(tmpDir, "tasks", "ws_alpha", "task_corrupt.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "{ bad json");
 

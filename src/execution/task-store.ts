@@ -8,6 +8,7 @@ export interface TaskRecord {
   version: 1;
 
   taskId: string;
+  workspaceId: string;
   workspacePath: string;
 
   goal: string;
@@ -32,14 +33,20 @@ const TASK_ID_REGEX = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface TaskStoreOptions {
   stateDir?: string;
+  workspaceId: string;
 }
 
 export class TaskStore {
+  readonly workspaceId: string;
   private baseDir: string;
 
-  constructor(opts: TaskStoreOptions = {}) {
+  constructor(opts: TaskStoreOptions) {
+    if (!opts.workspaceId) {
+      throw new Error("TaskStore requires a workspaceId");
+    }
+    this.workspaceId = opts.workspaceId;
     const root = opts.stateDir ?? getStateDir();
-    this.baseDir = ensureDir(path.join(root, "tasks"));
+    this.baseDir = ensureDir(path.join(root, "tasks", opts.workspaceId));
   }
 
   private validateTaskId(taskId: string): void {
@@ -55,6 +62,11 @@ export class TaskStore {
 
   save(record: TaskRecord): void {
     this.validateTaskId(record.taskId);
+    if (record.workspaceId !== this.workspaceId) {
+      throw new Error(
+        `TaskRecord workspaceId mismatch: expected ${this.workspaceId}, got ${record.workspaceId}`
+      );
+    }
     const targetFile = this.getTaskFilePath(record.taskId);
     const tempFile = path.join(
       this.baseDir,
@@ -93,7 +105,11 @@ export class TaskStore {
 
     try {
       const content = fs.readFileSync(targetFile, "utf8");
-      return JSON.parse(content) as TaskRecord;
+      const record = JSON.parse(content) as TaskRecord;
+      if (record.workspaceId !== this.workspaceId) {
+        return null;
+      }
+      return record;
     } catch {
       return null;
     }
@@ -109,6 +125,7 @@ export class TaskStore {
       ...existing,
       ...patch,
       taskId: existing.taskId,
+      workspaceId: this.workspaceId,
       version: 1,
     };
 

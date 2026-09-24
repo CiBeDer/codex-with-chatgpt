@@ -8,6 +8,7 @@ import { bearerAuth } from "../auth/middleware.js";
 import { PairingManager } from "../pairing/manager.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createMcpHttpHandler } from "../mcp/http.js";
+import { TaskManager } from "../execution/task-manager.js";
 import { CloudflaredQuickTunnel } from "../tunnel/cloudflared.js";
 import { CloudflaredNamedTunnel } from "../tunnel/cloudflared-named.js";
 import type { TunnelProvider } from "../tunnel/provider.js";
@@ -40,7 +41,7 @@ export interface BridgeOptions {
   authStoreFile?: string;
   pairingTtlMs?: number;
   accessTokenTtlMs?: number;
-  taskManager?: import("../execution/task-manager.js").TaskManager;
+  taskManager?: TaskManager;
 }
 
 export interface Bridge {
@@ -126,8 +127,15 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
+  const taskManager =
+    opts.taskManager ??
+    new TaskManager({
+      workspaceId: workspace.id,
+      workspacePath: workspace.root,
+    });
+
   const mcpHandler = createMcpHttpHandler(
-    () => createMcpServer({ workspace, logger, taskManager: opts.taskManager }),
+    () => createMcpServer({ workspace, logger, taskManager }),
     logger
   );
   app.all(
