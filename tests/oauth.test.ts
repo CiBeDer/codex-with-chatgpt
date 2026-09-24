@@ -348,4 +348,48 @@ describe("refresh token rotation", () => {
       expect(verified.record.scopes).not.toContain("workspace.read");
     }
   });
+
+  it("omitted scope grants DEFAULT_SCOPES without execution.submit", async () => {
+    const { filterScopes, DEFAULT_SCOPES } = await import("../src/auth/store.js");
+    const scopes = filterScopes(undefined);
+    expect(scopes).toEqual([...DEFAULT_SCOPES]);
+    expect(scopes).not.toContain("execution.submit");
+  });
+
+  it("unknown scope throws invalid_scope and redirects with error=invalid_scope", async () => {
+    const { filterScopes } = await import("../src/auth/store.js");
+    expect(() => filterScopes("workspace.read unknown.scope")).toThrowError("invalid_scope");
+
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "workspace.read unknown.perm");
+
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("error=invalid_scope");
+  });
+
+  it("pairing page displays execution submit description and does not claim read-only", async () => {
+    const clientId = await registerClient();
+    const { challenge } = pkceVerifierAndChallenge();
+    const authorizeUrl = new URL(`${base}/oauth/authorize`);
+    authorizeUrl.searchParams.set("client_id", clientId);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    authorizeUrl.searchParams.set("scope", "workspace.read execution.submit");
+
+    const response = await fetch(authorizeUrl, { redirect: "manual" });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).not.toContain("(read-only)");
+    expect(html).toContain("Submit coding tasks to the local OpenCode executor");
+  });
 });

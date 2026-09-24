@@ -76,7 +76,7 @@ function pairingPage(opts: {
     "workspace.search": "Search this workspace",
     "git.read": "Read git status and diffs",
     "execution.read": "Read Codex execution summaries",
-    "execution.submit": "Submit execution tasks",
+    "execution.submit": "Submit coding tasks to the local OpenCode executor",
     offline_access: "Stay connected between sessions",
   };
   const scopeList = opts.scopes
@@ -120,7 +120,7 @@ function pairingPage(opts: {
 <body>
 <div class="card">
   <h1>${escapedProductName}</h1>
-  <p class="sub">ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong> (read-only):</p>
+  <p class="sub">ChatGPT is requesting access to workspace <strong>${escapedWorkspaceName}</strong>:</p>
   <ul>${scopeList}</ul>
   <form method="POST" action="authorize">
     <input type="hidden" name="request_id" value="${escapedRequestId}">
@@ -222,7 +222,13 @@ export function createOAuthRouter(deps: OAuthDeps): Router {
       fail("invalid_request", "PKCE with S256 is required");
       return;
     }
-    const scopes = filterScopes(query.scope);
+    let scopes: string[];
+    try {
+      scopes = filterScopes(query.scope);
+    } catch {
+      fail("invalid_scope", "One or more requested scopes are invalid or unsupported");
+      return;
+    }
     const request: PendingAuthRequest = {
       id: randomBytes(16).toString("hex"),
       clientId: client.clientId,
