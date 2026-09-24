@@ -497,7 +497,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
         goal: z.string().min(1).max(5000).describe("High-level goal description"),
         plan: z.string().min(1).max(100000).describe("Detailed implementation plan"),
         tests: z.array(z.string().max(500)).max(20).optional().describe("Optional tests to execute"),
-        iteration: z.number().int().positive().default(1).describe("Iteration index"),
+        iteration: z.number().int().positive().optional().describe("Iteration index"),
       },
       annotations: { readOnlyHint: false },
     },
@@ -506,7 +506,7 @@ export function createMcpServer(ctx: McpContext): McpServer {
       if (denied) return denied;
 
       try {
-        await taskManager.create({
+        const record = await taskManager.create({
           taskId: args.task_id,
           workspacePath: workspace.root,
           goal: args.goal,
@@ -514,6 +514,14 @@ export function createMcpServer(ctx: McpContext): McpServer {
           tests: args.tests,
           iteration: args.iteration,
         });
+
+        if (record.state === "RUNNING") {
+          return okStructured({
+            task_id: args.task_id,
+            state: "RUNNING",
+            message: "Task is already running. Call task_status.",
+          });
+        }
 
         const executionPromise = taskManager.execute(args.task_id);
 

@@ -225,4 +225,127 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
     expect(record?.iteration).toBe(2);
     expect(record?.executorSessionId).toBe("ses_stable_session_42");
   });
+
+  it("does not overwrite or re-execute RUNNING task; deduplicates concurrent executions", async () => {
+    let executeCalls = 0;
+    let finishExecute: () => void;
+
+    const mockExecutor: Executor = {
+      health: async () => true,
+      ensureSession: async () => "ses_dedup_1",
+      execute: async (req: ExecutionRequest, sessionId: string) => {
+        executeCalls++;
+        await new Promise<void>((resolve) => {
+          finishExecute = resolve;
+        });
+        return {
+          taskId: req.taskId,
+          executorSessionId: sessionId,
+          state: "COMPLETED",
+          changedFiles: [],
+          startedAt: 1000,
+          finishedAt: 2000,
+        };
+      },
+      cancel: async () => true,
+    };
+
+    const manager = new TaskManager({ store, executor: mockExecutor });
+
+    // Step 1: Create taskA
+    const created1 = await manager.create({
+      taskId: "taskA",
+      workspacePath: "/repo/test",
+      goal: "Goal",
+      plan: "Plan",
+    });
+    expect(created1.state).toBe("CREATED");
+
+    // Start execute taskA (running in background)
+    const p1 = manager.execute("taskA");
+    await new Promise((r) => setTimeout(r, 10));
+
+    // While taskA is RUNNING, try create taskA again
+    const createdWhileRunning = await manager.create({
+      taskId: "taskA",
+      workspacePath: "/repo/test",
+      goal: "New Goal",
+      plan: "New Plan",
+    });
+    // Should NOT reset to CREATED
+    expect(createdWhileRunning.state).toBe("RUNNING");
+    expect(createdWhileRunning.goal).toBe("Goal");
+
+    // Second call to execute while RUNNING should return the SAME active promise
+    const p2 = manager.execute("taskA");
+    expect(p2).toBe(p1);
+
+    finishExecute!();
+    const res1 = await p1;
+    const res2 = await p2;
+    expect(res1.state).toBe("COMPLETED");
+    expect(res2.state).toBe("COMPLETED");
+    expect(executeCalls).toBe(1); // Only 1 execute call was made
+  });
+
+  it("rejects invalid iteration progression (skipped or backward numbers)", async () => {
+    const mockExecutor: Executor = {
+      health: async () => true,
+      ensureSession: async () => "ses_iter_1",
+      execute: async (req: ExecutionRequest, sessionId: string) => ({
+        taskId: req.taskId,
+        executorSessionId: sessionId,
+        state: "COMPLETED",
+        changedFiles: [],
+        startedAt: 1000,
+        finishedAt: 2000,
+      }),
+      cancel: async () => true,
+    };
+
+    const manager = new TaskManager({ store, executor: mockExecutor });
+
+    // New task must not start with iteration > 1
+    await expect(
+      manager.create({
+        taskId: "task_iter_test",
+        workspacePath: "/repo/test",
+        goal: "G",
+        plan: "P",
+        iteration: 2,
+      })
+    ).rejects.toThrowError(/Invalid iteration for new task: expected 1, got 2/);
+
+    // Iteration 1 passes
+    await manager.create({
+      taskId: "task_iter_test",
+      workspacePath: "/repo/test",
+      goal: "G",
+      plan: "P",
+      iteration: 1,
+    });
+    await manager.execute("task_iter_test");
+
+    // Next iteration skipping to 3 should be rejected
+    await expect(
+      manager.create({
+        taskId: "task_iter_test",
+        workspacePath: "/repo/test",
+        goal: "G2",
+        plan: "P2",
+        iteration: 3,
+      })
+    ).rejects.toThrowError(/Invalid iteration: expected 2, got 3/);
+
+    // Backward iteration 1 should be rejected
+    await expect(
+      manager.create({
+        taskId: "task_iter_test",
+        workspacePath: "/repo/test",
+        goal: "G2",
+        plan: "P2",
+        iteration: 1,
+      })
+    ).rejects.toThrowError(/Invalid iteration: expected 2, got 1/);
+  });
 });
