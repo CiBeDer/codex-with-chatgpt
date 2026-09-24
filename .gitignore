@@ -2,6 +2,7 @@ node_modules/
 dist/
 .tooling/
 .pnpm-store/
+.idea/
 *.log
 .DS_Store
 .env
