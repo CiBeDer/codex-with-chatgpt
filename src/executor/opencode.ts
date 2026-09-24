@@ -159,10 +159,17 @@ export class OpenCodeClient {
 
   async health(): Promise<boolean> {
     try {
-      await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
+      // Try /api/info first (OpenCode v2 server info endpoint)
+      await this.request<{ version?: string }>("GET", "/api/info", undefined, 5000);
       return true;
     } catch {
-      return false;
+      try {
+        // Fallback to /api/health if supported by older or mock versions
+        await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
+        return true;
+      } catch {
+        return false;
+      }
     }
   }
 
@@ -183,21 +190,38 @@ export class OpenCodeClient {
   }
 
   async prompt(sessionId: string, opts: PromptOptions): Promise<any> {
-    return this.request<any>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, {
+    const payload: Record<string, any> = {
+      text: opts.text,
       prompt: {
         text: opts.text,
         files: opts.files,
       },
-    });
+    };
+    if (opts.files) payload.files = opts.files;
+    return this.request<any>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, payload);
   }
 
   async waitForIdle(sessionId: string, timeoutMs?: number): Promise<void> {
-    await this.request<void>(
-      "POST",
-      `/api/session/${encodeURIComponent(sessionId)}/wait`,
-      undefined,
-      timeoutMs ?? this.executionTimeoutMs
-    );
+    try {
+      await this.request<void>(
+        "POST",
+        `/api/session/${encodeURIComponent(sessionId)}/wait`,
+        undefined,
+        timeoutMs ?? this.executionTimeoutMs
+      );
+    } catch (err: any) {
+      // In some OpenCode v2 builds, wait route is under /api/experimental/session/{id}/wait
+      if (err instanceof Error && err.message.includes("404")) {
+        await this.request<void>(
+          "POST",
+          `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
+          undefined,
+          timeoutMs ?? this.executionTimeoutMs
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   async getContext(sessionId: string): Promise<{ data: OpenCodeContextMessage[] }> {
