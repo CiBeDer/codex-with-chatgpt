@@ -249,12 +249,9 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     );
   });
 
-  describe("OpenCodeExecutor execution flow (Phase R1)", () => {
-    it("executes request successfully via session -> prompt -> wait -> context", async () => {
-      let sessionCreated = false;
-      let promptReceived = false;
-      let waitReceived = false;
-      let contextReceived = false;
+  describe("OpenCodeExecutor execution flow (Phase R8 API Contract)", () => {
+    it("executes request with strict v2 call order: session -> prompt -> wait -> context", async () => {
+      const callLog: string[] = [];
 
       handler = async (req, res) => {
         let body = "";
@@ -262,46 +259,49 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
         const parsed = body ? JSON.parse(body) : {};
 
         if (req.method === "POST" && req.url === "/api/session") {
-          sessionCreated = true;
+          callLog.push("1. POST /api/session");
           expect(parsed.location?.directory).toBe("/repo/workspace");
           expect(parsed.model?.id).toBe("test-model");
           expect(parsed.model?.providerID).toBe("test-provider");
-          expect(parsed.title).toBeUndefined();
+          expect(parsed.model?.variant).toBe("high");
+          expect(parsed.model?.modelID).toBeUndefined(); // Must NOT have modelID
+          expect(parsed.title).toBeUndefined(); // Must NOT send title
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ data: { id: "ses_exec_123" } }));
           return;
         }
 
         if (req.method === "POST" && req.url === "/api/session/ses_exec_123/prompt") {
-          promptReceived = true;
+          callLog.push("2. POST /api/session/{id}/prompt");
+          expect(parsed.text).toBeUndefined(); // Must NOT be top-level text
+          expect(parsed.prompt).toBeDefined();
+          expect(parsed.prompt.text).toBeDefined();
           expect(parsed.prompt.text).toContain("WORKSPACE:\n/repo/workspace");
+          expect(parsed.prompt.text).toContain("GOAL:\nFix calculation bug");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
           return;
         }
 
         if (req.method === "POST" && req.url === "/api/session/ses_exec_123/wait") {
-          waitReceived = true;
-          res.writeHead(204);
+          callLog.push("3. POST /api/session/{id}/wait");
+          res.writeHead(204); // 204 No Content
           res.end();
           return;
         }
 
         if (req.method === "GET" && req.url === "/api/session/ses_exec_123/context") {
-          contextReceived = true;
+          callLog.push("4. GET /api/session/{id}/context");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
               data: [
                 {
                   type: "assistant",
-                  time: { completed: Date.now() },
+                  time: { created: 1000, completed: 2000 },
                   content: [
-                    { type: "reasoning", text: "Internal reasoning..." },
-                    {
-                      type: "text",
-                      text: "Changed files: src/a.ts\nTests: 5 passed\nExecution completed.",
-                    },
+                    { type: "reasoning", text: "private reasoning" },
+                    { type: "text", text: "Implementation completed." },
                   ],
                 },
               ],
@@ -317,6 +317,7 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
         baseUrl,
         providerId: "test-provider",
         modelId: "test-model",
+        variant: "high",
       });
 
       const req = {
@@ -332,16 +333,19 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
 
       const res = await executor.execute(req, sessionId);
 
-      expect(sessionCreated).toBe(true);
-      expect(promptReceived).toBe(true);
-      expect(waitReceived).toBe(true);
-      expect(contextReceived).toBe(true);
+      // Verify strict call order
+      expect(callLog).toEqual([
+        "1. POST /api/session",
+        "2. POST /api/session/{id}/prompt",
+        "3. POST /api/session/{id}/wait",
+        "4. GET /api/session/{id}/context",
+      ]);
 
       expect(res.taskId).toBe("task_456");
       expect(res.executorSessionId).toBe("ses_exec_123");
       expect(res.state).toBe("COMPLETED");
-      expect(res.summary).toContain("Execution completed.");
-      expect(res.summary).not.toContain("Internal reasoning");
+      expect(res.summary).toBe("Implementation completed.");
+      expect(res.summary).not.toContain("private reasoning");
       expect(res.changedFiles).toEqual([]);
       expect(res.finishedAt).toBeDefined();
     });
