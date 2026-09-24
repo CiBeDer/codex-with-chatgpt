@@ -1,8 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { OpenCodeClient } from "../src/executor/opencode.js";
+import {
+  OpenCodeClient,
+  OpenCodeExecutor,
+  extractLatestAssistantText,
+  type OpenCodeContextMessage,
+} from "../src/executor/opencode.js";
 
-describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
+describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
   let server: http.Server;
   let port: number;
   let baseUrl: string;
@@ -30,10 +35,10 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
     });
   });
 
-  it("health success returns true", async () => {
+  it("health success calls GET /api/health and returns true", async () => {
     handler = (req, res) => {
       expect(req.method).toBe("GET");
-      expect(req.url).toBe("/api/info");
+      expect(req.url).toBe("/api/health");
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, version: "2.0.0" }));
     };
@@ -45,6 +50,7 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
 
   it("health failure returns false on non-200 or connection error", async () => {
     handler = (req, res) => {
+      expect(req.url).toBe("/api/health");
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "server error" }));
     };
@@ -58,21 +64,38 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
     expect(unreachableHealth).toBe(false);
   });
 
-  it("create session success returns sessionId", async () => {
+  it("create session success passes location.directory and model (id instead of modelID)", async () => {
     handler = async (req, res) => {
       expect(req.method).toBe("POST");
       expect(req.url).toBe("/api/session");
       let body = "";
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body);
-      expect(parsed.title).toBe("Test Session");
+
+      expect(parsed.title).toBeUndefined(); // No unconfirmed title
+      expect(parsed.location).toEqual({ directory: "/test/workspace" });
+      expect(parsed.agent).toBe("coder");
+      expect(parsed.model).toEqual({
+        providerID: "anthropic",
+        id: "claude-3-5-sonnet",
+        variant: "high",
+      });
+      expect(parsed.model.modelID).toBeUndefined();
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ data: { id: "ses_12345", title: "Test Session" } }));
+      res.end(JSON.stringify({ data: { id: "ses_12345" } }));
     };
 
     const client = new OpenCodeClient({ baseUrl });
-    const session = await client.createSession({ title: "Test Session" });
+    const session = await client.createSession({
+      directory: "/test/workspace",
+      agent: "coder",
+      model: {
+        providerID: "anthropic",
+        id: "claude-3-5-sonnet",
+        variant: "high",
+      },
+    });
     expect(session.id).toBe("ses_12345");
   });
 
@@ -88,53 +111,125 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
       password: "SUPER_SECRET_PASSWORD_123",
     });
 
-    await expect(client.createSession({ title: "Test Session" })).rejects.toThrowError(
+    await expect(client.createSession({ directory: "/test" })).rejects.toThrowError(
       /OpenCode API error: 500 POST \/api\/session/
     );
 
     try {
-      await client.createSession({ title: "Test Session" });
+      await client.createSession({ directory: "/test" });
     } catch (err: any) {
       expect(err.message).not.toContain("SUPER_SECRET_PASSWORD_123");
     }
   });
 
-  it("prompt success sends text and returns response data", async () => {
+  it("prompt sends { prompt: { text } } body and returns response", async () => {
     handler = async (req, res) => {
       expect(req.method).toBe("POST");
       expect(req.url).toBe("/api/session/ses_12345/prompt");
       let body = "";
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body);
-      expect(parsed.text).toBe("Hello executor");
+
+      expect(parsed.text).toBeUndefined();
+      expect(parsed.prompt).toBeDefined();
+      expect(parsed.prompt.text).toBe("Hello executor");
 
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ data: { text: "Task completed successfully" } }));
+      res.end(JSON.stringify({ ok: true }));
     };
 
     const client = new OpenCodeClient({ baseUrl });
     const result = await client.prompt("ses_12345", { text: "Hello executor" });
     expect(result).toBeDefined();
-    expect(result.data.text).toBe("Task completed successfully");
   });
 
-  it("prompt timeout throws timeout error", async () => {
+  it("request timeout throws timeout error", async () => {
     handler = (_req, _res) => {
-      // Intentionally do not respond
+      // Intentionally hang
     };
 
-    const client = new OpenCodeClient({ baseUrl, timeoutMs: 50 });
+    const client = new OpenCodeClient({ baseUrl, requestTimeoutMs: 50 });
     await expect(client.prompt("ses_12345", { text: "Hello" })).rejects.toThrowError(
       /OpenCode API request timed out after 50ms/
     );
   });
 
-  it("interrupt session success", async () => {
+  it("waitForIdle posts to /api/session/{id}/wait and handles 204 No Content with empty body", async () => {
+    handler = (req, res) => {
+      expect(req.method).toBe("POST");
+      expect(req.url).toBe("/api/session/ses_12345/wait");
+      res.writeHead(204);
+      res.end();
+    };
+
+    const client = new OpenCodeClient({ baseUrl });
+    await expect(client.waitForIdle("ses_12345")).resolves.toBeUndefined();
+  });
+
+  it("getContext gets context messages from /api/session/{id}/context", async () => {
+    handler = (req, res) => {
+      expect(req.method).toBe("GET");
+      expect(req.url).toBe("/api/session/ses_12345/context");
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          data: [
+            { type: "user", content: [{ type: "text", text: "Do work" }] },
+            {
+              type: "assistant",
+              time: { completed: 1000 },
+              content: [
+                { type: "reasoning", text: "Let me think..." },
+                { type: "text", text: "Finished the task successfully." },
+              ],
+            },
+          ],
+        })
+      );
+    };
+
+    const client = new OpenCodeClient({ baseUrl });
+    const context = await client.getContext("ses_12345");
+    expect(context.data).toHaveLength(2);
+  });
+
+  it("extractLatestAssistantText extracts only text from latest assistant completed message", () => {
+    const messages: OpenCodeContextMessage[] = [
+      {
+        type: "assistant",
+        time: { completed: 100 },
+        content: [{ type: "text", text: "Old message" }],
+      },
+      {
+        type: "user",
+        content: [{ type: "text", text: "Followup" }],
+      },
+      {
+        type: "assistant",
+        time: { completed: 200 },
+        content: [
+          { type: "reasoning", text: "Secret reasoning that shouldn't appear" } as any,
+          { type: "text", text: "Changed files: src/app.ts" },
+          { type: "text", text: "All tests passing." },
+        ],
+      },
+    ];
+
+    const extracted = extractLatestAssistantText(messages);
+    expect(extracted).toBe("Changed files: src/app.ts\nAll tests passing.");
+    expect(extracted).not.toContain("Secret reasoning");
+    expect(extracted).not.toContain("Old message");
+
+    expect(extractLatestAssistantText([])).toBe("");
+    expect(extractLatestAssistantText(null as any)).toBe("");
+  });
+
+  it("interrupt session sends POST /api/session/{id}/interrupt and handles 204", async () => {
     handler = (req, res) => {
       expect(req.method).toBe("POST");
       expect(req.url).toBe("/api/session/ses_12345/interrupt");
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
+      res.writeHead(204);
+      res.end();
     };
 
     const client = new OpenCodeClient({ baseUrl });
@@ -154,10 +249,12 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
     );
   });
 
-  describe("OpenCodeExecutor execution flow (Phase 4)", () => {
-    it("executes request successfully formatting prompt and parsing result", async () => {
-      let receivedSessionPayload: any;
-      let receivedPromptPayload: any;
+  describe("OpenCodeExecutor execution flow (Phase R1)", () => {
+    it("executes request successfully via session -> prompt -> wait -> context", async () => {
+      let sessionCreated = false;
+      let promptReceived = false;
+      let waitReceived = false;
+      let contextReceived = false;
 
       handler = async (req, res) => {
         let body = "";
@@ -165,20 +262,49 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
         const parsed = body ? JSON.parse(body) : {};
 
         if (req.method === "POST" && req.url === "/api/session") {
-          receivedSessionPayload = parsed;
+          sessionCreated = true;
+          expect(parsed.location?.directory).toBe("/repo/workspace");
+          expect(parsed.model?.id).toBe("test-model");
+          expect(parsed.model?.providerID).toBe("test-provider");
+          expect(parsed.title).toBeUndefined();
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ data: { id: "ses_exec_123" } }));
           return;
         }
 
         if (req.method === "POST" && req.url === "/api/session/ses_exec_123/prompt") {
-          receivedPromptPayload = parsed;
+          promptReceived = true;
+          expect(parsed.prompt.text).toContain("WORKSPACE:\n/repo/workspace");
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        if (req.method === "POST" && req.url === "/api/session/ses_exec_123/wait") {
+          waitReceived = true;
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+
+        if (req.method === "GET" && req.url === "/api/session/ses_exec_123/context") {
+          contextReceived = true;
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
-              data: {
-                text: "Changed files: src/a.ts\nTests: 5 passed\nExecution completed.",
-              },
+              data: [
+                {
+                  type: "assistant",
+                  time: { completed: Date.now() },
+                  content: [
+                    { type: "reasoning", text: "Internal reasoning..." },
+                    {
+                      type: "text",
+                      text: "Changed files: src/a.ts\nTests: 5 passed\nExecution completed.",
+                    },
+                  ],
+                },
+              ],
             })
           );
           return;
@@ -187,8 +313,10 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
         res.writeHead(404).end();
       };
 
-      const executor = new (await import("../src/executor/opencode.js")).OpenCodeExecutor({
+      const executor = new OpenCodeExecutor({
         baseUrl,
+        providerId: "test-provider",
+        modelId: "test-model",
       });
 
       const res = await executor.execute({
@@ -199,17 +327,15 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
         tests: ["pnpm test"],
       });
 
-      expect(receivedSessionPayload.location?.directory).toBe("/repo/workspace");
-      expect(receivedSessionPayload.title).toBe("Task task_456");
-
-      expect(receivedPromptPayload.text).toContain("WORKSPACE:\n/repo/workspace");
-      expect(receivedPromptPayload.text).toContain("GOAL:\nFix calculation bug");
-      expect(receivedPromptPayload.text).toContain("IMPLEMENTATION PLAN:\nModify add() function and run tests");
-      expect(receivedPromptPayload.text).toContain("REQUESTED TESTS:\npnpm test");
-      expect(receivedPromptPayload.text).not.toContain("password");
+      expect(sessionCreated).toBe(true);
+      expect(promptReceived).toBe(true);
+      expect(waitReceived).toBe(true);
+      expect(contextReceived).toBe(true);
 
       expect(res.taskId).toBe("task_456");
       expect(res.state).toBe("COMPLETED");
+      expect(res.summary).toContain("Execution completed.");
+      expect(res.summary).not.toContain("Internal reasoning");
       expect(res.changedFiles).toEqual(["src/a.ts"]);
       expect(res.finishedAt).toBeDefined();
     });
@@ -225,9 +351,7 @@ describe("OpenCodeClient (Phase 3 HTTP Client)", () => {
         res.end(JSON.stringify({ message: "LLM rate limit reached" }));
       };
 
-      const executor = new (await import("../src/executor/opencode.js")).OpenCodeExecutor({
-        baseUrl,
-      });
+      const executor = new OpenCodeExecutor({ baseUrl });
 
       const res = await executor.execute({
         taskId: "task_fail_1",

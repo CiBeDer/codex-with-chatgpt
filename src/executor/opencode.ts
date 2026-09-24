@@ -9,16 +9,19 @@ export interface OpenCodeConfig {
   providerId?: string;
   modelId?: string;
   variant?: string;
+  requestTimeoutMs?: number;
+  executionTimeoutMs?: number;
+  /** @deprecated use requestTimeoutMs instead */
   timeoutMs?: number;
 }
 
 export interface CreateSessionOptions {
-  title?: string;
   directory?: string;
   agent?: string;
   model?: {
     providerID: string;
-    modelID: string;
+    id: string;
+    variant?: string;
   };
 }
 
@@ -27,18 +30,55 @@ export interface PromptOptions {
   files?: Array<{ path: string; content?: string }>;
 }
 
+export type OpenCodeContextMessage =
+  | {
+      type: "assistant";
+      time?: {
+        completed?: number;
+      };
+      content?: Array<
+        | { type: "text"; text: string }
+        | { type: string; [key: string]: unknown }
+      >;
+    }
+  | {
+      type: string;
+      [key: string]: unknown;
+    };
+
+export function extractLatestAssistantText(messages: OpenCodeContextMessage[]): string {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && msg.type === "assistant") {
+      const texts: string[] = [];
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part && part.type === "text" && typeof (part as any).text === "string") {
+            texts.push((part as any).text);
+          }
+        }
+      }
+      return texts.join("\n");
+    }
+  }
+  return "";
+}
+
 export class OpenCodeClient {
   readonly baseUrl: string;
   private readonly username?: string;
   private readonly password?: string;
-  private readonly timeoutMs: number;
+  private readonly requestTimeoutMs: number;
+  private readonly executionTimeoutMs: number;
 
   constructor(config: OpenCodeConfig = {}) {
     let base = config.baseUrl || "http://127.0.0.1:4096";
     this.baseUrl = base.replace(/\/+$/, "");
     this.username = config.username;
     this.password = config.password;
-    this.timeoutMs = config.timeoutMs ?? 30000;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? config.timeoutMs ?? 30000;
+    this.executionTimeoutMs = config.executionTimeoutMs ?? 60 * 60 * 1000;
   }
 
   private getAuthHeader(): string | undefined {
@@ -69,7 +109,7 @@ export class OpenCodeClient {
       bodyStr = JSON.stringify(body);
     }
 
-    const timeoutMs = overrideTimeoutMs ?? this.timeoutMs;
+    const timeoutMs = overrideTimeoutMs ?? this.requestTimeoutMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -119,7 +159,7 @@ export class OpenCodeClient {
 
   async health(): Promise<boolean> {
     try {
-      await this.request<{ ok?: boolean }>("GET", "/api/info", undefined, 5000);
+      await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
       return true;
     } catch {
       return false;
@@ -128,7 +168,6 @@ export class OpenCodeClient {
 
   async createSession(opts: CreateSessionOptions = {}): Promise<{ id: string }> {
     const payload: Record<string, any> = {};
-    if (opts.title) payload.title = opts.title;
     if (opts.directory) {
       payload.location = { directory: opts.directory };
     }
@@ -144,11 +183,32 @@ export class OpenCodeClient {
   }
 
   async prompt(sessionId: string, opts: PromptOptions): Promise<any> {
-    return this.request<any>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, opts);
+    return this.request<any>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, {
+      prompt: {
+        text: opts.text,
+        files: opts.files,
+      },
+    });
+  }
+
+  async waitForIdle(sessionId: string, timeoutMs?: number): Promise<void> {
+    await this.request<void>(
+      "POST",
+      `/api/session/${encodeURIComponent(sessionId)}/wait`,
+      undefined,
+      timeoutMs ?? this.executionTimeoutMs
+    );
+  }
+
+  async getContext(sessionId: string): Promise<{ data: OpenCodeContextMessage[] }> {
+    return this.request<{ data: OpenCodeContextMessage[] }>(
+      "GET",
+      `/api/session/${encodeURIComponent(sessionId)}/context`
+    );
   }
 
   async interrupt(sessionId: string): Promise<boolean> {
-    await this.request<any>(
+    await this.request<void>(
       "POST",
       `/api/session/${encodeURIComponent(sessionId)}/interrupt`
     );
@@ -214,12 +274,15 @@ export class OpenCodeExecutor implements Executor {
       let sessionId = this.activeSessions.get(request.taskId);
       if (!sessionId) {
         const session = await this.client.createSession({
-          title: `Task ${request.taskId}`,
           directory: request.workspacePath,
           agent: this.config.agent,
           model:
             this.config.providerId && this.config.modelId
-              ? { providerID: this.config.providerId, modelID: this.config.modelId }
+              ? {
+                  providerID: this.config.providerId,
+                  id: this.config.modelId,
+                  variant: this.config.variant,
+                }
               : undefined,
         });
         sessionId = session.id;
@@ -227,12 +290,11 @@ export class OpenCodeExecutor implements Executor {
       }
 
       const promptText = buildExecutionPrompt(request);
-      const promptResult = await this.client.prompt(sessionId, { text: promptText });
+      await this.client.prompt(sessionId, { text: promptText });
+      await this.client.waitForIdle(sessionId);
 
-      const outputText =
-        promptResult?.data?.text ||
-        (typeof promptResult?.data === "string" ? promptResult.data : "") ||
-        "";
+      const contextRes = await this.client.getContext(sessionId);
+      const outputText = extractLatestAssistantText(contextRes.data);
 
       // Parse changed files from outputText if present
       const changedFiles: string[] = [];
