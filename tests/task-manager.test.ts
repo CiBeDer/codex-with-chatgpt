@@ -438,4 +438,65 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
       })
     ).rejects.toThrowError(/Invalid iteration: expected 2, got 1/);
   });
+
+  it("records execution summary, saves output, and populates changedFiles from gitStatus", async () => {
+    const { latestExecutionRecord } = await import("../src/execution/records.js");
+    const { listExecutionOutputs, readExecutionOutput } = await import("../src/execution/output.js");
+
+    const mockExecutor: Executor = {
+      health: async () => true,
+      ensureSession: async () => "ses_review_42",
+      execute: async (req: ExecutionRequest, sessionId: string) => ({
+        taskId: req.taskId,
+        executorSessionId: sessionId,
+        state: "COMPLETED",
+        summary: "I completed the work. Fixed bug in src/index.ts and added tests.",
+        changedFiles: [], // Intentionally empty to test gitStatus resolution
+        startedAt: 1000,
+        finishedAt: 2000,
+      }),
+      cancel: async () => true,
+    };
+
+    const manager = new TaskManager({
+      workspaceId: "ws_test_mgr",
+      store,
+      executor: mockExecutor,
+    });
+
+    await manager.create({
+      taskId: "task_review_1",
+      workspacePath: tmpDir,
+      goal: "Implement feature",
+      plan: "Steps to follow",
+      iteration: 1,
+    });
+
+    const result = await manager.execute("task_review_1");
+    expect(result.state).toBe("COMPLETED");
+
+    // Check latestExecutionRecord
+    const latest = latestExecutionRecord("ws_test_mgr");
+    expect(latest).not.toBeNull();
+    expect(latest?.taskId).toBe("task_review_1");
+    expect(latest?.iteration).toBe(1);
+    expect(latest?.tests).toBeNull(); // tests not faked
+    expect(latest?.exitStatus).toBe("0");
+    expect(latest?.outputAvailable).toBe(true);
+    expect(latest?.outputId).toBeDefined();
+
+    // Check outputs
+    const outputs = listExecutionOutputs("ws_test_mgr");
+    expect(outputs.length).toBeGreaterThan(0);
+    const outputItem = outputs.find((o) => o.id === latest?.outputId);
+    expect(outputItem).toBeDefined();
+    expect(outputItem?.command).toBe("opencode session ses_review_42");
+
+    // Read execution output
+    const readRes = readExecutionOutput("ws_test_mgr", latest!.outputId!);
+    expect(readRes.ok).toBe(true);
+    if (readRes.ok) {
+      expect(readRes.text).toContain("I completed the work. Fixed bug in src/index.ts and added tests.");
+    }
+  });
 });

@@ -2,6 +2,9 @@ import { TaskStore, type TaskRecord } from "./task-store.js";
 import type { Executor } from "../executor/executor.js";
 import { OpenCodeExecutor } from "../executor/opencode.js";
 import type { ExecutionRequest, ExecutionResult, ExecutionState } from "../executor/types.js";
+import { gitStatus } from "../workspace/git.js";
+import { saveExecutionOutput } from "./output.js";
+import { appendExecutionRecord } from "./records.js";
 
 export interface CreateTaskOptions {
   taskId: string;
@@ -170,6 +173,68 @@ export class TaskManager {
         const finalState: ExecutionState =
           result.state === "COMPLETED" ? "COMPLETED" : "FAILED";
 
+        // Query gitStatus on workspacePath to discover dirty file paths
+        let changedFiles = result.changedFiles ?? [];
+        if (record.workspacePath) {
+          try {
+            const status = gitStatus(record.workspacePath);
+            if (status.isRepo) {
+              const paths = new Set<string>();
+              for (const s of status.staged) paths.add(s.path);
+              for (const u of status.unstaged) paths.add(u.path);
+              for (const ut of status.untracked) paths.add(ut);
+              for (const c of status.conflicted) paths.add(c);
+              changedFiles = [...paths];
+            }
+          } catch {
+            // Ignore git status query errors
+          }
+        }
+
+        // Save execution output
+        let outputId: number | undefined;
+        let outputAvailable = false;
+        if (result.summary) {
+          try {
+            const savedOutput = saveExecutionOutput(this.workspaceId, {
+              command: `opencode session ${sessionId}`,
+              raw: result.summary,
+              exitCode: finalState === "COMPLETED" ? 0 : 1,
+              taskId: record.taskId,
+              iteration: record.iteration,
+            });
+            outputId = savedOutput.id;
+            outputAvailable = savedOutput.allowed;
+          } catch {
+            // Ignore output save failures
+          }
+        }
+
+        // Append execution record for independent review
+        try {
+          appendExecutionRecord(this.workspaceId, {
+            taskId: record.taskId,
+            iteration: record.iteration,
+            changedFiles,
+            tests: null, // Test evidence has not been independently parsed from tool output
+            exitStatus: finalState === "COMPLETED" ? "0" : "1",
+            timestamp: new Date().toISOString(),
+            notes:
+              finalState === "COMPLETED"
+                ? "OpenCode execution completed. changedFiles reflects current dirty workspace paths after execution; it may include pre-existing changes."
+                : `OpenCode execution failed: ${result.error ?? "unknown error"}`,
+            outputId,
+            outputAvailable,
+          });
+        } catch {
+          // Ignore execution record persistence failures
+        }
+
+        const finalResult: ExecutionResult = {
+          ...result,
+          changedFiles,
+        };
+
         this.store.update(taskId, {
           state: finalState,
           summary: result.summary,
@@ -177,7 +242,7 @@ export class TaskManager {
           finishedAt: result.finishedAt ?? Date.now(),
         });
 
-        resolvePromise(result);
+        resolvePromise(finalResult);
       } catch (err: any) {
         const current = this.store.get(taskId);
         if (current?.state === "CANCELLED") {

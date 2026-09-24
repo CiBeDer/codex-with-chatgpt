@@ -342,7 +342,7 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       expect(res.state).toBe("COMPLETED");
       expect(res.summary).toContain("Execution completed.");
       expect(res.summary).not.toContain("Internal reasoning");
-      expect(res.changedFiles).toEqual(["src/a.ts"]);
+      expect(res.changedFiles).toEqual([]);
       expect(res.finishedAt).toBeDefined();
     });
 

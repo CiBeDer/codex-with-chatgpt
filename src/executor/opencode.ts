@@ -293,24 +293,12 @@ export class OpenCodeExecutor implements Executor {
       const contextRes = await this.client.getContext(sessionId);
       const outputText = extractLatestAssistantText(contextRes.data);
 
-      // Parse changed files from outputText if present
-      const changedFiles: string[] = [];
-      const changedMatch = outputText.match(/(?:Changed files|files changed):\s*([^\n]+)/i);
-      if (changedMatch && changedMatch[1]) {
-        for (const file of changedMatch[1].split(/[,;\s]+/)) {
-          const trimmed = file.trim();
-          if (trimmed && !changedFiles.includes(trimmed)) {
-            changedFiles.push(trimmed);
-          }
-        }
-      }
-
       return {
         taskId: request.taskId,
         executorSessionId: sessionId,
         state: "COMPLETED",
         summary: outputText,
-        changedFiles,
+        changedFiles: [],
         startedAt,
         finishedAt: Date.now(),
       };
