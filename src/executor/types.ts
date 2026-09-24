@@ -16,6 +16,7 @@ export interface ExecutionRequest {
 
 export interface ExecutionResult {
   taskId: string;
+  executorSessionId?: string;
   state: ExecutionState;
   summary?: string;
   changedFiles: string[];

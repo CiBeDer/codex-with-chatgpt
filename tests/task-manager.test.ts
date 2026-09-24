@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -7,7 +7,7 @@ import { TaskStore } from "../src/execution/task-store.js";
 import type { Executor } from "../src/executor/executor.js";
 import type { ExecutionRequest, ExecutionResult } from "../src/executor/types.js";
 
-describe("TaskManager (Phase 6)", () => {
+describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
   let tmpDir: string;
   let store: TaskStore;
 
@@ -39,17 +39,32 @@ describe("TaskManager (Phase 6)", () => {
     expect(fetched).toEqual(record);
   });
 
-  it("execute runs task to COMPLETED and stores summary and changed files", async () => {
+  it("execute calls ensureSession, persists sessionId BEFORE prompt, and completes", async () => {
+    let sessionEnsured = false;
+    let sessionIdSavedBeforeExecute = false;
+
     const mockExecutor: Executor = {
       health: async () => true,
-      execute: async (req: ExecutionRequest): Promise<ExecutionResult> => ({
-        taskId: req.taskId,
-        state: "COMPLETED",
-        summary: "Tests passed cleanly",
-        changedFiles: ["src/index.ts"],
-        startedAt: 1000,
-        finishedAt: 2000,
-      }),
+      ensureSession: async (req: ExecutionRequest): Promise<string> => {
+        sessionEnsured = true;
+        return "ses_mock_999";
+      },
+      execute: async (req: ExecutionRequest, sessionId: string): Promise<ExecutionResult> => {
+        // Verify that before execute runs, TaskStore has already saved executorSessionId
+        const saved = store.get(req.taskId);
+        if (saved?.executorSessionId === "ses_mock_999") {
+          sessionIdSavedBeforeExecute = true;
+        }
+        return {
+          taskId: req.taskId,
+          executorSessionId: sessionId,
+          state: "COMPLETED",
+          summary: "Tests passed cleanly",
+          changedFiles: ["src/index.ts"],
+          startedAt: 1000,
+          finishedAt: 2000,
+        };
+      },
       cancel: async () => true,
     };
 
@@ -62,19 +77,23 @@ describe("TaskManager (Phase 6)", () => {
     });
 
     const result = await manager.execute("task_exec_1");
+    expect(sessionEnsured).toBe(true);
+    expect(sessionIdSavedBeforeExecute).toBe(true);
     expect(result.state).toBe("COMPLETED");
     expect(result.summary).toBe("Tests passed cleanly");
 
     const record = await manager.get("task_exec_1");
     expect(record?.state).toBe("COMPLETED");
-    expect(record?.summary).toBe("Tests passed cleanly");
+    expect(record?.executorSessionId).toBe("ses_mock_999");
   });
 
   it("execute sets FAILED state when executor fails", async () => {
     const mockExecutor: Executor = {
       health: async () => true,
-      execute: async (req: ExecutionRequest): Promise<ExecutionResult> => ({
+      ensureSession: async () => "ses_mock_fail",
+      execute: async (req: ExecutionRequest, sessionId: string): Promise<ExecutionResult> => ({
         taskId: req.taskId,
+        executorSessionId: sessionId,
         state: "FAILED",
         error: "Build failed with exit code 1",
         changedFiles: [],
@@ -101,18 +120,19 @@ describe("TaskManager (Phase 6)", () => {
     expect(record?.error).toBe("Build failed with exit code 1");
   });
 
-  it("cancel transitions RUNNING task to CANCELLED and interrupts executor", async () => {
-    let cancelCalled = false;
+  it("cancel transitions RUNNING task to CANCELLED and passes persisted sessionId to executor.cancel", async () => {
+    let cancelCalledWith: { taskId: string; sessionId: string } | null = null;
     let executeResolve: (res: ExecutionResult) => void;
 
     const mockExecutor: Executor = {
       health: async () => true,
-      execute: (req: ExecutionRequest) =>
+      ensureSession: async () => "ses_to_cancel_123",
+      execute: (req: ExecutionRequest, sessionId: string) =>
         new Promise<ExecutionResult>((resolve) => {
           executeResolve = resolve;
         }),
-      cancel: async (taskId: string) => {
-        cancelCalled = true;
+      cancel: async (taskId: string, sessionId: string) => {
+        cancelCalledWith = { taskId, sessionId };
         return true;
       },
     };
@@ -126,33 +146,41 @@ describe("TaskManager (Phase 6)", () => {
     });
 
     // Start execution in background
-    const execPromise = manager.execute("task_cancel_1");
+    manager.execute("task_cancel_1");
 
     // Wait microtask so state transitions to RUNNING
     await new Promise((r) => setTimeout(r, 10));
 
     const runningRecord = await manager.get("task_cancel_1");
     expect(runningRecord?.state).toBe("RUNNING");
+    expect(runningRecord?.executorSessionId).toBe("ses_to_cancel_123");
 
     const cancelled = await manager.cancel("task_cancel_1");
     expect(cancelled).toBe(true);
-    expect(cancelCalled).toBe(true);
+    expect(cancelCalledWith).toEqual({
+      taskId: "task_cancel_1",
+      sessionId: "ses_to_cancel_123",
+    });
 
     const cancelledRecord = await manager.get("task_cancel_1");
     expect(cancelledRecord?.state).toBe("CANCELLED");
   });
 
-  it("same task with next iteration reuses existing session mapping", async () => {
-    let callCount = 0;
-    const receivedRequests: ExecutionRequest[] = [];
+  it("retains executorSessionId across TaskManager instances and across iterations without re-creating session", async () => {
+    let ensureSessionCalls = 0;
+    const executedSessions: string[] = [];
 
     const mockExecutor: Executor = {
       health: async () => true,
-      execute: async (req: ExecutionRequest) => {
-        callCount++;
-        receivedRequests.push(req);
+      ensureSession: async () => {
+        ensureSessionCalls++;
+        return "ses_stable_session_42";
+      },
+      execute: async (req: ExecutionRequest, sessionId: string) => {
+        executedSessions.push(sessionId);
         return {
           taskId: req.taskId,
+          executorSessionId: sessionId,
           state: "COMPLETED",
           changedFiles: [],
           startedAt: 1000,
@@ -162,33 +190,39 @@ describe("TaskManager (Phase 6)", () => {
       cancel: async () => true,
     };
 
-    const manager = new TaskManager({ store, executor: mockExecutor });
-
-    // Iteration 1
-    await manager.create({
+    // First instance: Iteration 1
+    const manager1 = new TaskManager({ store, executor: mockExecutor });
+    await manager1.create({
       taskId: "task_reuse",
       workspacePath: "/repo/test",
       goal: "Goal",
       plan: "Plan 1",
       iteration: 1,
     });
-    await manager.execute("task_reuse");
+    await manager1.execute("task_reuse");
 
-    // Iteration 2 with same taskId
-    await manager.create({
+    expect(ensureSessionCalls).toBe(1);
+    expect(executedSessions[0]).toBe("ses_stable_session_42");
+
+    // Second instance (e.g. process restarted with same TaskStore): Iteration 2
+    const freshStore = new TaskStore({ stateDir: tmpDir });
+    const manager2 = new TaskManager({ store: freshStore, executor: mockExecutor });
+
+    await manager2.create({
       taskId: "task_reuse",
       workspacePath: "/repo/test",
       goal: "Goal",
       plan: "Plan 2",
       iteration: 2,
     });
-    await manager.execute("task_reuse");
+    await manager2.execute("task_reuse");
 
-    expect(callCount).toBe(2);
-    expect(receivedRequests[0].iteration).toBe(1);
-    expect(receivedRequests[1].iteration).toBe(2);
+    // ensureSession should NOT have been called again!
+    expect(ensureSessionCalls).toBe(1);
+    expect(executedSessions[1]).toBe("ses_stable_session_42");
 
-    const record = await manager.get("task_reuse");
+    const record = await manager2.get("task_reuse");
     expect(record?.iteration).toBe(2);
+    expect(record?.executorSessionId).toBe("ses_stable_session_42");
   });
 });

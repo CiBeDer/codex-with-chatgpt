@@ -319,13 +319,18 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
         modelId: "test-model",
       });
 
-      const res = await executor.execute({
+      const req = {
         taskId: "task_456",
         workspacePath: "/repo/workspace",
         goal: "Fix calculation bug",
         plan: "Modify add() function and run tests",
         tests: ["pnpm test"],
-      });
+      };
+
+      const sessionId = await executor.ensureSession(req);
+      expect(sessionId).toBe("ses_exec_123");
+
+      const res = await executor.execute(req, sessionId);
 
       expect(sessionCreated).toBe(true);
       expect(promptReceived).toBe(true);
@@ -333,6 +338,7 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       expect(contextReceived).toBe(true);
 
       expect(res.taskId).toBe("task_456");
+      expect(res.executorSessionId).toBe("ses_exec_123");
       expect(res.state).toBe("COMPLETED");
       expect(res.summary).toContain("Execution completed.");
       expect(res.summary).not.toContain("Internal reasoning");
@@ -342,25 +348,24 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
 
     it("returns FAILED state on execution error", async () => {
       handler = (req, res) => {
-        if (req.method === "POST" && req.url === "/api/session") {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ data: { id: "ses_exec_fail" } }));
-          return;
-        }
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ message: "LLM rate limit reached" }));
       };
 
       const executor = new OpenCodeExecutor({ baseUrl });
 
-      const res = await executor.execute({
-        taskId: "task_fail_1",
-        workspacePath: "/repo/workspace",
-        goal: "Fail test",
-        plan: "Fail plan",
-      });
+      const res = await executor.execute(
+        {
+          taskId: "task_fail_1",
+          workspacePath: "/repo/workspace",
+          goal: "Fail test",
+          plan: "Fail plan",
+        },
+        "ses_fail_1"
+      );
 
       expect(res.taskId).toBe("task_fail_1");
+      expect(res.executorSessionId).toBe("ses_fail_1");
       expect(res.state).toBe("FAILED");
       expect(res.error).toContain("LLM rate limit reached");
     });

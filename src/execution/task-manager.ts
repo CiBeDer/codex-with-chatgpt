@@ -79,9 +79,15 @@ export class TaskManager {
       iteration: record.iteration,
     };
 
+    let sessionId = record.executorSessionId;
+    if (!sessionId) {
+      sessionId = await this.executor.ensureSession(executionReq);
+      this.store.update(taskId, { executorSessionId: sessionId });
+    }
+
     const promise = (async () => {
       try {
-        const result = await this.executor.execute(executionReq);
+        const result = await this.executor.execute(executionReq, sessionId!);
 
         const current = this.store.get(taskId);
         if (current?.state === "CANCELLED") {
@@ -153,13 +159,18 @@ export class TaskManager {
     if (record.state === "CANCELLED") return true;
     if (record.state === "COMPLETED" || record.state === "FAILED") return false;
 
+    const sessionId = record.executorSessionId;
+    if (sessionId) {
+      const ok = await this.executor.cancel(taskId, sessionId);
+      if (!ok) return false;
+    }
+
     this.store.update(taskId, {
       state: "CANCELLED",
       finishedAt: Date.now(),
       error: "Task cancelled by user",
     });
 
-    await this.executor.cancel(taskId);
     return true;
   }
 }

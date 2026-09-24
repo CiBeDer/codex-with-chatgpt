@@ -3,11 +3,17 @@ import type { ExecutionRequest, ExecutionResult } from "./types.js";
 export interface Executor {
   health(): Promise<boolean>;
 
-  execute(
+  ensureSession(
     request: ExecutionRequest
+  ): Promise<string>;
+
+  execute(
+    request: ExecutionRequest,
+    sessionId: string
   ): Promise<ExecutionResult>;
 
   cancel(
-    taskId: string
+    taskId: string,
+    sessionId: string
   ): Promise<boolean>;
 }

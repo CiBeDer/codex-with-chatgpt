@@ -258,7 +258,6 @@ Rules:
 
 export class OpenCodeExecutor implements Executor {
   private client: OpenCodeClient;
-  private activeSessions = new Map<string, string>(); // taskId -> sessionId
 
   constructor(readonly config: OpenCodeConfig = {}) {
     this.client = new OpenCodeClient(config);
@@ -268,27 +267,25 @@ export class OpenCodeExecutor implements Executor {
     return this.client.health();
   }
 
-  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+  async ensureSession(request: ExecutionRequest): Promise<string> {
+    const session = await this.client.createSession({
+      directory: request.workspacePath,
+      agent: this.config.agent,
+      model:
+        this.config.providerId && this.config.modelId
+          ? {
+              providerID: this.config.providerId,
+              id: this.config.modelId,
+              variant: this.config.variant,
+            }
+          : undefined,
+    });
+    return session.id;
+  }
+
+  async execute(request: ExecutionRequest, sessionId: string): Promise<ExecutionResult> {
     const startedAt = Date.now();
     try {
-      let sessionId = this.activeSessions.get(request.taskId);
-      if (!sessionId) {
-        const session = await this.client.createSession({
-          directory: request.workspacePath,
-          agent: this.config.agent,
-          model:
-            this.config.providerId && this.config.modelId
-              ? {
-                  providerID: this.config.providerId,
-                  id: this.config.modelId,
-                  variant: this.config.variant,
-                }
-              : undefined,
-        });
-        sessionId = session.id;
-        this.activeSessions.set(request.taskId, sessionId);
-      }
-
       const promptText = buildExecutionPrompt(request);
       await this.client.prompt(sessionId, { text: promptText });
       await this.client.waitForIdle(sessionId);
@@ -310,6 +307,7 @@ export class OpenCodeExecutor implements Executor {
 
       return {
         taskId: request.taskId,
+        executorSessionId: sessionId,
         state: "COMPLETED",
         summary: outputText,
         changedFiles,
@@ -319,6 +317,7 @@ export class OpenCodeExecutor implements Executor {
     } catch (err: any) {
       return {
         taskId: request.taskId,
+        executorSessionId: sessionId,
         state: "FAILED",
         error: err instanceof Error ? err.message : String(err),
         changedFiles: [],
@@ -328,8 +327,7 @@ export class OpenCodeExecutor implements Executor {
     }
   }
 
-  async cancel(taskId: string): Promise<boolean> {
-    const sessionId = this.activeSessions.get(taskId);
+  async cancel(taskId: string, sessionId: string): Promise<boolean> {
     if (!sessionId) return false;
     return this.client.interrupt(sessionId);
   }
