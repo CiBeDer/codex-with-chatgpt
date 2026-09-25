@@ -4,6 +4,7 @@ import {
   OpenCodeClient,
   OpenCodeExecutor,
   extractLatestAssistantText,
+  parseLatestCompletedAssistant,
   type OpenCodeContextMessage,
 } from "../src/executor/opencode.js";
 
@@ -259,6 +260,73 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     expect(extractLatestAssistantText(null as any)).toBe("");
   });
 
+  describe("parseLatestCompletedAssistant classification (Phase S3)", () => {
+    it("skips incomplete assistant and picks prior completed assistant", () => {
+      const messages: OpenCodeContextMessage[] = [
+        {
+          type: "assistant",
+          time: { created: 10, completed: 50 },
+          finish: "stop",
+          content: [{ type: "text", text: "Valid completed output" }],
+        },
+        {
+          type: "assistant",
+          time: { created: 60 }, // no completed
+          content: [{ type: "text", text: "Still streaming/incomplete" }],
+        },
+      ];
+
+      const res = parseLatestCompletedAssistant(messages);
+      expect(res.found).toBe(true);
+      expect(res.completed).toBe(true);
+      expect(res.text).toBe("Valid completed output");
+      expect(res.finish).toBe("stop");
+    });
+
+    it("returns found=false if no completed assistant exists", () => {
+      const messages: OpenCodeContextMessage[] = [
+        {
+          type: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+        {
+          type: "assistant",
+          time: { created: 100 }, // no completed
+          content: [{ type: "text", text: "incomplete" }],
+        },
+      ];
+
+      const res = parseLatestCompletedAssistant(messages);
+      expect(res.found).toBe(false);
+      expect(res.completed).toBe(false);
+      expect(res.text).toBe("");
+    });
+
+    it("extracts error field and finish status", () => {
+      const messages: OpenCodeContextMessage[] = [
+        {
+          type: "assistant",
+          time: { completed: 150 },
+          finish: "error",
+          error: {
+            type: "ProviderAuthError",
+            message: "Invalid API key",
+          },
+          content: [{ type: "text", text: "Failed halfway" }],
+        },
+      ];
+
+      const res = parseLatestCompletedAssistant(messages);
+      expect(res.found).toBe(true);
+      expect(res.finish).toBe("error");
+      expect(res.error).toEqual({
+        type: "ProviderAuthError",
+        message: "Invalid API key",
+      });
+      expect(res.text).toBe("Failed halfway");
+    });
+  });
+
   it("interrupt session sends POST /api/session/{id}/interrupt and handles 204", async () => {
     handler = (req, res) => {
       expect(req.method).toBe("POST");
@@ -408,6 +476,136 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       expect(res.executorSessionId).toBe("ses_fail_1");
       expect(res.state).toBe("FAILED");
       expect(res.error).toContain("LLM rate limit reached");
+    });
+
+    it("returns FAILED state if no completed assistant message is found after wait", async () => {
+      handler = (req, res) => {
+        if (req.method === "POST" && req.url?.endsWith("/prompt")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.method === "POST" && req.url?.endsWith("/wait")) {
+          res.writeHead(204).end();
+          return;
+        }
+        if (req.method === "GET" && req.url?.endsWith("/context")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              data: [
+                {
+                  type: "assistant",
+                  time: { created: 100 }, // no completed
+                  content: [{ type: "text", text: "streaming..." }],
+                },
+              ],
+            })
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      };
+
+      const executor = new OpenCodeExecutor({ baseUrl });
+      const res = await executor.execute(
+        {
+          taskId: "task_no_completed",
+          workspacePath: "/repo/workspace",
+          goal: "Test goal",
+          plan: "Test plan",
+        },
+        "ses_no_completed"
+      );
+
+      expect(res.state).toBe("FAILED");
+      expect(res.error).toContain("No completed assistant message found");
+    });
+
+    it("returns FAILED state if assistant message has structured error", async () => {
+      handler = (req, res) => {
+        if (req.method === "POST" && req.url?.endsWith("/prompt")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.method === "POST" && req.url?.endsWith("/wait")) {
+          res.writeHead(204).end();
+          return;
+        }
+        if (req.method === "GET" && req.url?.endsWith("/context")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              data: [
+                {
+                  type: "assistant",
+                  time: { created: 100, completed: 200 },
+                  finish: "error",
+                  error: {
+                    type: "RateLimitError",
+                    message: "Quota exceeded",
+                  },
+                },
+              ],
+            })
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      };
+
+      const executor = new OpenCodeExecutor({ baseUrl });
+      const res = await executor.execute(
+        {
+          taskId: "task_structured_err",
+          workspacePath: "/repo/workspace",
+          goal: "Test goal",
+          plan: "Test plan",
+        },
+        "ses_err"
+      );
+
+      expect(res.state).toBe("FAILED");
+      expect(res.error).toContain("RateLimitError: Quota exceeded");
+    });
+
+    it("returns FAILED state if assistant message finish is content-filter or error without explicit error object", async () => {
+      handler = (req, res) => {
+        if (req.method === "POST" && req.url?.endsWith("/prompt")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.method === "POST" && req.url?.endsWith("/wait")) {
+          res.writeHead(204).end();
+          return;
+        }
+        if (req.method === "GET" && req.url?.endsWith("/context")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              data: [
+                {
+                  type: "assistant",
+                  time: { created: 100, completed: 200 },
+                  finish: "content-filter",
+                },
+              ],
+            })
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      };
+
+      const executor = new OpenCodeExecutor({ baseUrl });
+      const res = await executor.execute(
+        {
+          taskId: "task_filter",
+          workspacePath: "/repo/workspace",
+          goal: "Test goal",
+          plan: "Test plan",
+        },
+        "ses_filter"
+      );
+
+      expect(res.state).toBe("FAILED");
+      expect(res.error).toContain("content-filter");
     });
   });
 });

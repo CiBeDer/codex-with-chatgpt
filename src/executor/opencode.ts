@@ -29,39 +29,83 @@ export interface PromptOptions {
   text: string;
 }
 
+export interface OpenCodeStructuredError {
+  type?: string;
+  message: string;
+}
+
+export type OpenCodeAssistantMessage = {
+  type: "assistant";
+  time?: {
+    created?: number;
+    completed?: number;
+  };
+  finish?: "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown";
+  error?: OpenCodeStructuredError;
+  content?: Array<
+    | { type: "text"; text: string }
+    | { type: "reasoning"; text?: string }
+    | { type: string; [key: string]: unknown }
+  >;
+};
+
 export type OpenCodeContextMessage =
-  | {
-      type: "assistant";
-      time?: {
-        completed?: number;
-      };
-      content?: Array<
-        | { type: "text"; text: string }
-        | { type: string; [key: string]: unknown }
-      >;
-    }
+  | OpenCodeAssistantMessage
   | {
       type: string;
       [key: string]: unknown;
     };
 
-export function extractLatestAssistantText(messages: OpenCodeContextMessage[]): string {
-  if (!Array.isArray(messages)) return "";
+export interface ParsedAssistantResult {
+  found: boolean;
+  completed: boolean;
+  text: string;
+  finish?: string;
+  error?: {
+    type?: string;
+    message: string;
+  };
+}
+
+export function parseLatestCompletedAssistant(
+  messages: OpenCodeContextMessage[]
+): ParsedAssistantResult {
+  if (!Array.isArray(messages)) {
+    return { found: false, completed: false, text: "" };
+  }
+
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (msg && msg.type === "assistant") {
+    if (
+      msg &&
+      msg.type === "assistant" &&
+      typeof (msg as OpenCodeAssistantMessage).time?.completed === "number"
+    ) {
+      const assistantMsg = msg as OpenCodeAssistantMessage;
       const texts: string[] = [];
-      if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
+      if (Array.isArray(assistantMsg.content)) {
+        for (const part of assistantMsg.content) {
           if (part && part.type === "text" && typeof (part as any).text === "string") {
             texts.push((part as any).text);
           }
         }
       }
-      return texts.join("\n");
+
+      return {
+        found: true,
+        completed: true,
+        text: texts.join("\n"),
+        finish: assistantMsg.finish,
+        error: assistantMsg.error,
+      };
     }
   }
-  return "";
+
+  return { found: false, completed: false, text: "" };
+}
+
+export function extractLatestAssistantText(messages: OpenCodeContextMessage[]): string {
+  return parseLatestCompletedAssistant(messages).text;
 }
 
 export class OpenCodeClient {
@@ -296,13 +340,53 @@ export class OpenCodeExecutor implements Executor {
       await this.client.waitForIdle(sessionId);
 
       const contextRes = await this.client.getContext(sessionId);
-      const outputText = extractLatestAssistantText(contextRes.data);
+      const parsedAssistant = parseLatestCompletedAssistant(contextRes.data);
+
+      if (!parsedAssistant.found || !parsedAssistant.completed) {
+        return {
+          taskId: request.taskId,
+          executorSessionId: sessionId,
+          state: "FAILED",
+          error: "No completed assistant message found after OpenCode session became idle",
+          changedFiles: [],
+          startedAt,
+          finishedAt: Date.now(),
+        };
+      }
+
+      if (parsedAssistant.error) {
+        const typePrefix = parsedAssistant.error.type ? `${parsedAssistant.error.type}: ` : "";
+        return {
+          taskId: request.taskId,
+          executorSessionId: sessionId,
+          state: "FAILED",
+          error: `${typePrefix}${parsedAssistant.error.message}`,
+          changedFiles: [],
+          startedAt,
+          finishedAt: Date.now(),
+        };
+      }
+
+      if (parsedAssistant.finish === "error" || parsedAssistant.finish === "content-filter") {
+        return {
+          taskId: request.taskId,
+          executorSessionId: sessionId,
+          state: "FAILED",
+          error:
+            parsedAssistant.finish === "content-filter"
+              ? "OpenCode assistant execution was blocked by content-filter"
+              : "OpenCode assistant finished with error",
+          changedFiles: [],
+          startedAt,
+          finishedAt: Date.now(),
+        };
+      }
 
       return {
         taskId: request.taskId,
         executorSessionId: sessionId,
         state: "COMPLETED",
-        summary: outputText,
+        summary: parsedAssistant.text,
         changedFiles: [],
         startedAt,
         finishedAt: Date.now(),
