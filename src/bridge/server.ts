@@ -9,6 +9,8 @@ import { PairingManager } from "../pairing/manager.js";
 import { createMcpServer } from "../mcp/server.js";
 import { createMcpHttpHandler } from "../mcp/http.js";
 import { TaskManager } from "../execution/task-manager.js";
+import { OpenCodeExecutor } from "../executor/opencode.js";
+import { loadOpenCodeConfig } from "../executor/config.js";
 import { CloudflaredQuickTunnel } from "../tunnel/cloudflared.js";
 import { CloudflaredNamedTunnel } from "../tunnel/cloudflared-named.js";
 import type { TunnelProvider } from "../tunnel/provider.js";
@@ -127,12 +129,19 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
 
   // ---- MCP endpoint (bearer-protected) --------------------------------------
 
-  const taskManager =
-    opts.taskManager ??
-    new TaskManager({
+  let taskManager = opts.taskManager;
+  if (!taskManager) {
+    const opencodeConfig = loadOpenCodeConfig();
+    logger.info(
+      `Configured OpenCodeExecutor: baseUrl=${opencodeConfig.baseUrl}, agent=${opencodeConfig.agent ?? "default"}, model=${opencodeConfig.providerId ?? "default"}/${opencodeConfig.modelId ?? "default"}, authConfigured=${Boolean(opencodeConfig.username || opencodeConfig.password)}`
+    );
+    const executor = new OpenCodeExecutor(opencodeConfig);
+    taskManager = new TaskManager({
       workspaceId: workspace.id,
       workspacePath: workspace.root,
+      executor,
     });
+  }
 
   // Trigger background recovery for any tasks left in RUNNING state (non-blocking)
   void taskManager.recoverRunningTasks().catch((err) => {
