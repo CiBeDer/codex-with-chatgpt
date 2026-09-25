@@ -132,4 +132,34 @@ export class TaskStore {
     this.save(updated);
     return updated;
   }
+
+  list(): TaskRecord[] {
+    const dir = this.baseDir;
+    if (!fs.existsSync(dir)) {
+      return [];
+    }
+
+    try {
+      const files = fs.readdirSync(dir);
+      const records: TaskRecord[] = [];
+
+      for (const file of files) {
+        if (!file.endsWith(".json")) continue;
+        const filePath = path.join(dir, file);
+        try {
+          const content = fs.readFileSync(filePath, "utf8");
+          const record = JSON.parse(content) as TaskRecord;
+          if (record && record.workspaceId === this.workspaceId && record.taskId) {
+            records.push(record);
+          }
+        } catch {
+          // Ignore unparseable or corrupted files safely
+        }
+      }
+
+      return records;
+    } catch {
+      return [];
+    }
+  }
 }

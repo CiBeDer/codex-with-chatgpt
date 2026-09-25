@@ -499,4 +499,157 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
       expect(readRes.text).toContain("I completed the work. Fixed bug in src/index.ts and added tests.");
     }
   });
+
+  describe("recoverRunningTasks (Phase S4)", () => {
+    it("resumes running tasks on restart without re-prompting or ensuring session", async () => {
+      let ensureSessionCalls = 0;
+      let executeCalls = 0;
+      let resumeCalls = 0;
+      let resumedSession = "";
+
+      const mockExecutor: Executor = {
+        health: async () => true,
+        ensureSession: async () => {
+          ensureSessionCalls++;
+          return "ses_new";
+        },
+        execute: async () => {
+          executeCalls++;
+          throw new Error("execute should not be called on recovery");
+        },
+        resume: async (req: ExecutionRequest, sessionId: string) => {
+          resumeCalls++;
+          resumedSession = sessionId;
+          return {
+            taskId: req.taskId,
+            executorSessionId: sessionId,
+            state: "COMPLETED",
+            summary: "Resumed and completed",
+            changedFiles: [],
+            startedAt: 1000,
+            finishedAt: 2000,
+          };
+        },
+        cancel: async () => true,
+      };
+
+      // Manually plant a RUNNING task in store as if bridge crashed mid-execution
+      store.save({
+        version: 1,
+        taskId: "task_crashed_1",
+        workspaceId: "ws_test_mgr",
+        workspacePath: "/repo/test",
+        goal: "Crashed task goal",
+        plan: "Crashed task plan",
+        iteration: 1,
+        state: "RUNNING",
+        executorSessionId: "ses_persisted_prior",
+        executor: "opencode",
+        createdAt: 1000,
+        startedAt: 1050,
+      });
+
+      const newManager = new TaskManager({ store, executor: mockExecutor });
+      await newManager.recoverRunningTasks();
+
+      // Give background recovery a tick
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(resumeCalls).toBe(1);
+      expect(resumedSession).toBe("ses_persisted_prior");
+      expect(ensureSessionCalls).toBe(0);
+      expect(executeCalls).toBe(0);
+
+      const updated = await newManager.get("task_crashed_1");
+      expect(updated?.state).toBe("COMPLETED");
+      expect(updated?.summary).toBe("Resumed and completed");
+    });
+
+    it("marks task as FAILED if resume encounters SessionNotFoundError", async () => {
+      const mockExecutor: Executor = {
+        health: async () => true,
+        ensureSession: async () => "ses_x",
+        execute: async () => {
+          throw new Error("unexpected execute");
+        },
+        resume: async () => {
+          throw new Error("OpenCode API error: 404 POST /api/session/ses_gone/wait - [SessionNotFoundError] Session not found");
+        },
+        cancel: async () => true,
+      };
+
+      store.save({
+        version: 1,
+        taskId: "task_gone_session",
+        workspaceId: "ws_test_mgr",
+        workspacePath: "/repo/test",
+        goal: "Gone task",
+        plan: "Gone plan",
+        iteration: 1,
+        state: "RUNNING",
+        executorSessionId: "ses_gone",
+        executor: "opencode",
+        createdAt: 1000,
+      });
+
+      const manager = new TaskManager({ store, executor: mockExecutor });
+      await manager.recoverRunningTasks();
+      await new Promise((r) => setTimeout(r, 50));
+
+      const updated = await manager.get("task_gone_session");
+      expect(updated?.state).toBe("FAILED");
+      expect(updated?.error).toContain("OpenCode session not found while recovering task task_gone_session");
+    });
+
+    it("deduplicates recovery if called multiple times concurrently", async () => {
+      let resumeCalls = 0;
+      let resolveResume!: (res: ExecutionResult) => void;
+
+      const mockExecutor: Executor = {
+        health: async () => true,
+        ensureSession: async () => "ses_x",
+        execute: async () => {
+          throw new Error("unexpected execute");
+        },
+        resume: async (req, sid) => {
+          resumeCalls++;
+          return new Promise<ExecutionResult>((resolve) => {
+            resolveResume = resolve;
+          });
+        },
+        cancel: async () => true,
+      };
+
+      store.save({
+        version: 1,
+        taskId: "task_concurrent_recover",
+        workspaceId: "ws_test_mgr",
+        workspacePath: "/repo/test",
+        goal: "Concurrent",
+        plan: "Concurrent",
+        iteration: 1,
+        state: "RUNNING",
+        executorSessionId: "ses_concurrent",
+        executor: "opencode",
+        createdAt: 1000,
+      });
+
+      const manager = new TaskManager({ store, executor: mockExecutor });
+      const p1 = manager.recoverRunningTasks();
+      const p2 = manager.recoverRunningTasks();
+
+      // Ensure recovery was triggered and deduped before waiting for resolve
+      expect(resumeCalls).toBe(1);
+
+      resolveResume!({
+        taskId: "task_concurrent_recover",
+        executorSessionId: "ses_concurrent",
+        state: "COMPLETED",
+        changedFiles: [],
+        startedAt: 1000,
+      });
+
+      await Promise.all([p1, p2]);
+    });
+  });
 });

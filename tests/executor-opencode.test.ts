@@ -607,5 +607,52 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       expect(res.state).toBe("FAILED");
       expect(res.error).toContain("content-filter");
     });
+
+    it("resume executes wait and context without re-prompting", async () => {
+      const callLog: string[] = [];
+
+      handler = async (req, res) => {
+        if (req.method === "POST" && req.url === "/api/session/ses_resume_1/wait") {
+          callLog.push("POST /wait");
+          res.writeHead(204).end();
+          return;
+        }
+
+        if (req.method === "GET" && req.url === "/api/session/ses_resume_1/context") {
+          callLog.push("GET /context");
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              data: [
+                {
+                  type: "assistant",
+                  time: { created: 100, completed: 200 },
+                  finish: "stop",
+                  content: [{ type: "text", text: "Successfully resumed!" }],
+                },
+              ],
+            })
+          );
+          return;
+        }
+
+        if (req.url?.includes("/prompt") || req.url === "/api/session") {
+          callLog.push(`UNEXPECTED ${req.method} ${req.url}`);
+        }
+        res.writeHead(404).end();
+      };
+
+      const executor = new OpenCodeExecutor({ baseUrl });
+      const req = {
+        taskId: "task_resume_test",
+        workspacePath: "/repo/workspace",
+        goal: "Resume goal",
+        plan: "Resume plan",
+      };
+
+      const result = await executor.resume(req, "ses_resume_1");
+      expect(callLog).toEqual(["POST /wait", "GET /context"]);
+      expect(result.state).toBe("COMPLETED");
+      expect(result.summary).toBe("Successfully resumed!");
+    });
   });
 });

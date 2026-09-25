@@ -112,7 +112,10 @@ export class TaskManager {
       const active = this.activeExecutions.get(taskId);
       if (active) return active;
       // If marked RUNNING in store but no in-memory active execution (e.g. after bridge restart),
-      // do not re-prompt automatically. Return RUNNING state.
+      // do not re-prompt automatically. Trigger resume recovery in background and return RUNNING state.
+      if (record.executorSessionId) {
+        this.recoverSingleTask(record);
+      }
       return Promise.resolve({
         taskId,
         executorSessionId: record.executorSessionId,
@@ -155,93 +158,7 @@ export class TaskManager {
         }
 
         const result = await this.executor.execute(executionReq, sessionId!);
-
-        const current = this.store.get(taskId);
-        if (current?.state === "CANCELLED") {
-          const cancelledRes: ExecutionResult = {
-            taskId,
-            state: "CANCELLED",
-            changedFiles: result.changedFiles ?? [],
-            startedAt,
-            finishedAt: Date.now(),
-            error: "Task was cancelled",
-          };
-          resolvePromise(cancelledRes);
-          return;
-        }
-
-        const finalState: ExecutionState =
-          result.state === "COMPLETED" ? "COMPLETED" : "FAILED";
-
-        // Query gitStatus on workspacePath to discover dirty file paths
-        let changedFiles = result.changedFiles ?? [];
-        if (record.workspacePath) {
-          try {
-            const status = gitStatus(record.workspacePath);
-            if (status.isRepo) {
-              const paths = new Set<string>();
-              for (const s of status.staged) paths.add(s.path);
-              for (const u of status.unstaged) paths.add(u.path);
-              for (const ut of status.untracked) paths.add(ut);
-              for (const c of status.conflicted) paths.add(c);
-              changedFiles = [...paths];
-            }
-          } catch {
-            // Ignore git status query errors
-          }
-        }
-
-        // Save execution output
-        let outputId: number | undefined;
-        let outputAvailable = false;
-        if (result.summary) {
-          try {
-            const savedOutput = saveExecutionOutput(this.workspaceId, {
-              command: `opencode session ${sessionId}`,
-              raw: result.summary,
-              exitCode: finalState === "COMPLETED" ? 0 : 1,
-              taskId: record.taskId,
-              iteration: record.iteration,
-            });
-            outputId = savedOutput.id;
-            outputAvailable = savedOutput.allowed;
-          } catch {
-            // Ignore output save failures
-          }
-        }
-
-        // Append execution record for independent review
-        try {
-          appendExecutionRecord(this.workspaceId, {
-            taskId: record.taskId,
-            iteration: record.iteration,
-            changedFiles,
-            tests: null, // Test evidence has not been independently parsed from tool output
-            exitStatus: finalState === "COMPLETED" ? "0" : "1",
-            timestamp: new Date().toISOString(),
-            notes:
-              finalState === "COMPLETED"
-                ? "OpenCode execution completed. changedFiles reflects current dirty workspace paths after execution; it may include pre-existing changes."
-                : `OpenCode execution failed: ${result.error ?? "unknown error"}`,
-            outputId,
-            outputAvailable,
-          });
-        } catch {
-          // Ignore execution record persistence failures
-        }
-
-        const finalResult: ExecutionResult = {
-          ...result,
-          changedFiles,
-        };
-
-        this.store.update(taskId, {
-          state: finalState,
-          summary: result.summary,
-          error: result.error,
-          finishedAt: result.finishedAt ?? Date.now(),
-        });
-
+        const finalResult = await this.finalizeExecution(record, result, sessionId!, startedAt);
         resolvePromise(finalResult);
       } catch (err: any) {
         const current = this.store.get(taskId);
@@ -280,6 +197,208 @@ export class TaskManager {
     })();
 
     return promise;
+  }
+
+  private async finalizeExecution(
+    record: TaskRecord,
+    result: ExecutionResult,
+    sessionId: string,
+    startedAt: number
+  ): Promise<ExecutionResult> {
+    const current = this.store.get(record.taskId);
+    if (current?.state === "CANCELLED") {
+      return {
+        taskId: record.taskId,
+        state: "CANCELLED",
+        changedFiles: result.changedFiles ?? [],
+        startedAt,
+        finishedAt: Date.now(),
+        error: "Task was cancelled",
+      };
+    }
+
+    const finalState: ExecutionState =
+      result.state === "COMPLETED" ? "COMPLETED" : "FAILED";
+
+    // Query gitStatus on workspacePath to discover dirty file paths
+    let changedFiles = result.changedFiles ?? [];
+    if (record.workspacePath) {
+      try {
+        const status = gitStatus(record.workspacePath);
+        if (status.isRepo) {
+          const paths = new Set<string>();
+          for (const s of status.staged) paths.add(s.path);
+          for (const u of status.unstaged) paths.add(u.path);
+          for (const ut of status.untracked) paths.add(ut);
+          for (const c of status.conflicted) paths.add(c);
+          changedFiles = [...paths];
+        }
+      } catch {
+        // Ignore git status query errors
+      }
+    }
+
+    // Save execution output
+    let outputId: number | undefined;
+    let outputAvailable = false;
+    if (result.summary) {
+      try {
+        const savedOutput = saveExecutionOutput(this.workspaceId, {
+          command: `opencode session ${sessionId}`,
+          raw: result.summary,
+          exitCode: finalState === "COMPLETED" ? 0 : 1,
+          taskId: record.taskId,
+          iteration: record.iteration,
+        });
+        outputId = savedOutput.id;
+        outputAvailable = savedOutput.allowed;
+      } catch {
+        // Ignore output save failures
+      }
+    }
+
+    // Append execution record for independent review
+    try {
+      appendExecutionRecord(this.workspaceId, {
+        taskId: record.taskId,
+        iteration: record.iteration,
+        changedFiles,
+        tests: null, // Test evidence has not been independently parsed from tool output
+        exitStatus: finalState === "COMPLETED" ? "0" : "1",
+        timestamp: new Date().toISOString(),
+        notes:
+          finalState === "COMPLETED"
+            ? "OpenCode execution completed. changedFiles reflects current dirty workspace paths after execution; it may include pre-existing changes."
+            : `OpenCode execution failed: ${result.error ?? "unknown error"}`,
+        outputId,
+        outputAvailable,
+      });
+    } catch {
+      // Ignore execution record persistence failures
+    }
+
+    const finalResult: ExecutionResult = {
+      ...result,
+      changedFiles,
+    };
+
+    this.store.update(record.taskId, {
+      state: finalState,
+      summary: result.summary,
+      error: result.error,
+      finishedAt: result.finishedAt ?? Date.now(),
+    });
+
+    return finalResult;
+  }
+
+  private recoverSingleTask(record: TaskRecord): Promise<ExecutionResult> {
+    const taskId = record.taskId;
+    const existingActive = this.activeExecutions.get(taskId);
+    if (existingActive) return existingActive;
+
+    const startedAt = record.startedAt ?? record.createdAt;
+    const sessionId = record.executorSessionId;
+    if (!sessionId) {
+      const errMsg = `Cannot recover RUNNING task without executorSessionId: ${taskId}`;
+      this.store.update(taskId, {
+        state: "FAILED",
+        error: errMsg,
+        finishedAt: Date.now(),
+      });
+      return Promise.resolve({
+        taskId,
+        state: "FAILED",
+        error: errMsg,
+        changedFiles: [],
+        startedAt,
+        finishedAt: Date.now(),
+      });
+    }
+
+    let resolvePromise!: (res: ExecutionResult) => void;
+    let rejectPromise!: (err: any) => void;
+    const promise = new Promise<ExecutionResult>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    this.activeExecutions.set(taskId, promise);
+
+    const executionReq: ExecutionRequest = {
+      taskId: record.taskId,
+      workspacePath: record.workspacePath,
+      goal: record.goal,
+      plan: record.plan,
+      tests: record.tests,
+      iteration: record.iteration,
+    };
+
+    (async () => {
+      try {
+        const resumeFn = this.executor.resume
+          ? this.executor.resume.bind(this.executor)
+          : this.executor.execute.bind(this.executor);
+
+        const result = await resumeFn(executionReq, sessionId);
+        const finalRes = await this.finalizeExecution(record, result, sessionId, startedAt);
+        resolvePromise(finalRes);
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const isSessionNotFound =
+          errMsg.includes("SessionNotFoundError") ||
+          errMsg.includes("404") ||
+          errMsg.toLowerCase().includes("session not found");
+
+        if (isSessionNotFound) {
+          const notFoundError = `OpenCode session not found while recovering task ${taskId}`;
+          this.store.update(taskId, {
+            state: "FAILED",
+            error: notFoundError,
+            finishedAt: Date.now(),
+          });
+          resolvePromise({
+            taskId,
+            state: "FAILED",
+            error: notFoundError,
+            changedFiles: [],
+            startedAt,
+            finishedAt: Date.now(),
+          });
+          return;
+        }
+
+        // For temporary network/connection errors, keep RUNNING in store and return RUNNING
+        resolvePromise({
+          taskId,
+          state: "RUNNING",
+          executorSessionId: sessionId,
+          error: errMsg,
+          changedFiles: [],
+          startedAt,
+        });
+      } finally {
+        this.activeExecutions.delete(taskId);
+      }
+    })();
+
+    return promise;
+  }
+
+  async recoverRunningTasks(): Promise<void> {
+    const records = this.store.list();
+    const running = records.filter((r) => r.state === "RUNNING");
+    if (running.length === 0) return;
+
+    const promises: Promise<ExecutionResult>[] = [];
+    for (const record of running) {
+      if (this.activeExecutions.has(record.taskId)) {
+        const active = this.activeExecutions.get(record.taskId);
+        if (active) promises.push(active);
+        continue;
+      }
+      promises.push(this.recoverSingleTask(record));
+    }
+    await Promise.all(promises);
   }
 
   async cancel(taskId: string): Promise<boolean> {

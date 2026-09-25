@@ -12,6 +12,11 @@ export interface Executor {
     sessionId: string
   ): Promise<ExecutionResult>;
 
+  resume?(
+    request: ExecutionRequest,
+    sessionId: string
+  ): Promise<ExecutionResult>;
+
   cancel(
     taskId: string,
     sessionId: string

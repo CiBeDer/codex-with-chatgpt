@@ -332,11 +332,12 @@ export class OpenCodeExecutor implements Executor {
     return session.id;
   }
 
-  async execute(request: ExecutionRequest, sessionId: string): Promise<ExecutionResult> {
-    const startedAt = Date.now();
+  private async collectResult(
+    request: ExecutionRequest,
+    sessionId: string,
+    startedAt: number
+  ): Promise<ExecutionResult> {
     try {
-      const promptText = buildExecutionPrompt(request);
-      await this.client.prompt(sessionId, { text: promptText });
       await this.client.waitForIdle(sessionId);
 
       const contextRes = await this.client.getContext(sessionId);
@@ -402,6 +403,30 @@ export class OpenCodeExecutor implements Executor {
         finishedAt: Date.now(),
       };
     }
+  }
+
+  async execute(request: ExecutionRequest, sessionId: string): Promise<ExecutionResult> {
+    const startedAt = Date.now();
+    try {
+      const promptText = buildExecutionPrompt(request);
+      await this.client.prompt(sessionId, { text: promptText });
+      return await this.collectResult(request, sessionId, startedAt);
+    } catch (err: any) {
+      return {
+        taskId: request.taskId,
+        executorSessionId: sessionId,
+        state: "FAILED",
+        error: err instanceof Error ? err.message : String(err),
+        changedFiles: [],
+        startedAt,
+        finishedAt: Date.now(),
+      };
+    }
+  }
+
+  async resume(request: ExecutionRequest, sessionId: string): Promise<ExecutionResult> {
+    const startedAt = Date.now();
+    return this.collectResult(request, sessionId, startedAt);
   }
 
   async cancel(taskId: string, sessionId: string): Promise<boolean> {

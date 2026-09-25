@@ -174,6 +174,44 @@ describe("TaskStore (Phase R3 Workspace Isolation)", () => {
     }
   });
 
+  it("lists all task records belonging to current workspace and ignores corrupted files", () => {
+    store.save({
+      version: 1,
+      taskId: "task_list_1",
+      workspaceId: "ws_alpha",
+      workspacePath: "/test",
+      goal: "g1",
+      plan: "p1",
+      iteration: 1,
+      state: "CREATED",
+      executor: "opencode",
+      createdAt: 100,
+    });
+    store.save({
+      version: 1,
+      taskId: "task_list_2",
+      workspaceId: "ws_alpha",
+      workspacePath: "/test",
+      goal: "g2",
+      plan: "p2",
+      iteration: 1,
+      state: "RUNNING",
+      executorSessionId: "ses_list_2",
+      executor: "opencode",
+      createdAt: 200,
+    });
+
+    // Write a non-json file and a corrupted json file
+    const tasksDir = path.join(tmpDir, "tasks", "ws_alpha");
+    fs.writeFileSync(path.join(tasksDir, "notes.txt"), "some notes");
+    fs.writeFileSync(path.join(tasksDir, "corrupted.json"), "invalid json content");
+
+    const list = store.list();
+    expect(list).toHaveLength(2);
+    const taskIds = list.map((t) => t.taskId).sort();
+    expect(taskIds).toEqual(["task_list_1", "task_list_2"]);
+  });
+
   it("handles corrupted json gracefully by returning null", () => {
     const file = path.join(tmpDir, "tasks", "ws_alpha", "task_corrupt.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });

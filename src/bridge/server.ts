@@ -134,6 +134,11 @@ export async function startBridge(opts: BridgeOptions): Promise<Bridge> {
       workspacePath: workspace.root,
     });
 
+  // Trigger background recovery for any tasks left in RUNNING state (non-blocking)
+  void taskManager.recoverRunningTasks().catch((err) => {
+    logger.warn(`Failed to recover running tasks for workspace ${workspace.id}: ${err instanceof Error ? err.message : String(err)}`);
+  });
+
   const mcpHandler = createMcpHttpHandler(
     () => createMcpServer({ workspace, logger, taskManager }),
     logger
