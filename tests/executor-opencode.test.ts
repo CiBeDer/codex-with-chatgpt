@@ -5,6 +5,7 @@ import {
   OpenCodeExecutor,
   extractLatestAssistantText,
   parseLatestCompletedAssistant,
+  buildExecutionPrompt,
   type OpenCodeContextMessage,
 } from "../src/executor/opencode.js";
 
@@ -653,6 +654,28 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       expect(callLog).toEqual(["POST /wait", "GET /context"]);
       expect(result.state).toBe("COMPLETED");
       expect(result.summary).toBe("Successfully resumed!");
+    });
+
+    it("buildExecutionPrompt formats plan, tests, and security constraints into prompt (Phase S6)", () => {
+      const prompt = buildExecutionPrompt({
+        taskId: "task_sec_1",
+        workspacePath: "/repo/workspace",
+        goal: "Implement authentication",
+        plan: "1. Add middleware\n2. Add route",
+        tests: ["npm test auth"],
+      });
+
+      expect(prompt).toContain("constrained C2C execution agent");
+      expect(prompt).toContain("WORKSPACE:\n/repo/workspace");
+      expect(prompt).toContain("GOAL:\nImplement authentication");
+      expect(prompt).toContain("IMPLEMENTATION PLAN:\n1. Add middleware\n2. Add route");
+      expect(prompt).toContain("REQUESTED TESTS:\nnpm test auth");
+      expect(prompt).toContain("Do not commit or push Git changes");
+      expect(prompt).toContain("modify files outside the workspace");
+      expect(prompt).toContain("commit Git changes (git commit)");
+      expect(prompt).toContain("push Git changes (git push)");
+      expect(prompt).toContain("publish packages");
+      expect(prompt).toContain("deploy services");
     });
   });
 });

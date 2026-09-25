@@ -268,7 +268,7 @@ export class OpenCodeClient {
 export function buildExecutionPrompt(req: ExecutionRequest): string {
   const tests = req.tests && req.tests.length > 0 ? req.tests.join("\n") : "None specified";
 
-  return `You are the execution agent.
+  return `You are a constrained C2C execution agent.
 
 The architectural analysis and implementation plan have already
 been produced by ChatGPT.
@@ -286,6 +286,21 @@ ${req.plan}
 
 REQUESTED TESTS:
 ${tests}
+
+You may:
+- inspect files inside the current workspace
+- edit project files inside the workspace
+- run build/test/lint commands
+
+You must not:
+- modify files outside the workspace
+- commit Git changes (git commit)
+- push Git changes (git push)
+- publish packages
+- deploy services
+- modify global machine configuration
+
+If the plan requires a forbidden action, stop and report a blocker.
 
 Rules:
 
