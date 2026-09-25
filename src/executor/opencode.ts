@@ -27,7 +27,6 @@ export interface CreateSessionOptions {
 
 export interface PromptOptions {
   text: string;
-  files?: Array<{ path: string; content?: string }>;
 }
 
 export type OpenCodeContextMessage =
@@ -190,14 +189,11 @@ export class OpenCodeClient {
   }
 
   async prompt(sessionId: string, opts: PromptOptions): Promise<any> {
-    const payload: Record<string, any> = {
-      text: opts.text,
+    const payload = {
       prompt: {
         text: opts.text,
-        files: opts.files,
       },
     };
-    if (opts.files) payload.files = opts.files;
     return this.request<any>("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, payload);
   }
 

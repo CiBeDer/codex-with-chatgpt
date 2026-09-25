@@ -122,7 +122,7 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     }
   });
 
-  it("prompt sends text and prompt body and returns response", async () => {
+  it("prompt sends { prompt: { text } } body and returns response", async () => {
     handler = async (req, res) => {
       expect(req.method).toBe("POST");
       expect(req.url).toBe("/api/session/ses_12345/prompt");
@@ -130,7 +130,8 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body);
 
-      expect(parsed.text).toBe("Hello executor");
+      expect(parsed.text).toBeUndefined();
+      expect(parsed.files).toBeUndefined();
       expect(parsed.prompt).toBeDefined();
       expect(parsed.prompt.text).toBe("Hello executor");
 
@@ -273,7 +274,8 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
 
         if (req.method === "POST" && req.url === "/api/session/ses_exec_123/prompt") {
           callLog.push("2. POST /api/session/{id}/prompt");
-          expect(parsed.text).toBeDefined(); // Top-level text matches OpenCode v2 schema
+          expect(parsed.text).toBeUndefined(); // Top-level text must NOT be present
+          expect(parsed.files).toBeUndefined(); // Top-level files must NOT be present
           expect(parsed.prompt).toBeDefined();
           expect(parsed.prompt.text).toBeDefined();
           expect(parsed.prompt.text).toContain("WORKSPACE:\n/repo/workspace");
