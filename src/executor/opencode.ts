@@ -134,10 +134,16 @@ export class OpenCodeClient {
       }
 
       if (!res.ok) {
-        const errorDetail =
-          data && typeof data === "object"
-            ? data.message || data.error || JSON.stringify(data)
-            : text.slice(0, 200);
+        let errorDetail = "";
+        if (data && typeof data === "object") {
+          if (data._tag && data.message) {
+            errorDetail = `[${data._tag}] ${data.message}`;
+          } else {
+            errorDetail = data.message || data.error || JSON.stringify(data);
+          }
+        } else {
+          errorDetail = text.slice(0, 200);
+        }
         throw new Error(
           `OpenCode API error: ${res.status} ${method} ${endpoint} - ${errorDetail}`
         );
@@ -158,17 +164,10 @@ export class OpenCodeClient {
 
   async health(): Promise<boolean> {
     try {
-      // Try /api/info first (OpenCode v2 server info endpoint)
-      await this.request<{ version?: string }>("GET", "/api/info", undefined, 5000);
+      await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
       return true;
     } catch {
-      try {
-        // Fallback to /api/health if supported by older or mock versions
-        await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 
@@ -198,26 +197,12 @@ export class OpenCodeClient {
   }
 
   async waitForIdle(sessionId: string, timeoutMs?: number): Promise<void> {
-    try {
-      await this.request<void>(
-        "POST",
-        `/api/session/${encodeURIComponent(sessionId)}/wait`,
-        undefined,
-        timeoutMs ?? this.executionTimeoutMs
-      );
-    } catch (err: any) {
-      // In some OpenCode v2 builds, wait route is under /api/experimental/session/{id}/wait
-      if (err instanceof Error && err.message.includes("404")) {
-        await this.request<void>(
-          "POST",
-          `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
-          undefined,
-          timeoutMs ?? this.executionTimeoutMs
-        );
-        return;
-      }
-      throw err;
-    }
+    await this.request<void>(
+      "POST",
+      `/api/session/${encodeURIComponent(sessionId)}/wait`,
+      undefined,
+      timeoutMs ?? this.executionTimeoutMs
+    );
   }
 
   async getContext(sessionId: string): Promise<{ data: OpenCodeContextMessage[] }> {

@@ -35,10 +35,14 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     });
   });
 
-  it("health success calls GET /api/info or /api/health and returns true", async () => {
+  it("health success calls GET /api/health only and returns true", async () => {
+    let healthCalls = 0;
+    let infoCalls = 0;
     handler = (req, res) => {
+      if (req.url === "/api/health") healthCalls++;
+      if (req.url === "/api/info") infoCalls++;
       expect(req.method).toBe("GET");
-      expect(["/api/info", "/api/health"]).toContain(req.url);
+      expect(req.url).toBe("/api/health");
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, version: "2.0.0" }));
     };
@@ -46,11 +50,15 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     const client = new OpenCodeClient({ baseUrl });
     const healthy = await client.health();
     expect(healthy).toBe(true);
+    expect(healthCalls).toBe(1);
+    expect(infoCalls).toBe(0);
   });
 
-  it("health failure returns false on non-200 or connection error", async () => {
+  it("health failure returns false on non-200 or connection error without calling /api/info", async () => {
+    let infoCalls = 0;
     handler = (req, res) => {
-      expect(["/api/info", "/api/health"]).toContain(req.url);
+      if (req.url === "/api/info") infoCalls++;
+      expect(req.url).toBe("/api/health");
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "server error" }));
     };
@@ -58,6 +66,7 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     const client = new OpenCodeClient({ baseUrl });
     const healthy = await client.health();
     expect(healthy).toBe(false);
+    expect(infoCalls).toBe(0);
 
     const unreachableClient = new OpenCodeClient({ baseUrl: "http://127.0.0.1:59999" });
     const unreachableHealth = await unreachableClient.health();
@@ -165,6 +174,31 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
 
     const client = new OpenCodeClient({ baseUrl });
     await expect(client.waitForIdle("ses_12345")).resolves.toBeUndefined();
+  });
+
+  it("waitForIdle on 404 throws SessionNotFoundError without fallback to experimental", async () => {
+    let experimentalCalls = 0;
+    handler = (req, res) => {
+      if (req.url?.includes("/api/experimental/")) {
+        experimentalCalls++;
+      }
+      expect(req.method).toBe("POST");
+      expect(req.url).toBe("/api/session/ses_missing/wait");
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          _tag: "SessionNotFoundError",
+          sessionID: "ses_missing",
+          message: "Session not found: ses_missing",
+        })
+      );
+    };
+
+    const client = new OpenCodeClient({ baseUrl });
+    await expect(client.waitForIdle("ses_missing")).rejects.toThrowError(
+      /OpenCode API error: 404 POST \/api\/session\/ses_missing\/wait - .*SessionNotFoundError/
+    );
+    expect(experimentalCalls).toBe(0);
   });
 
   it("getContext gets context messages from /api/session/{id}/context", async () => {
