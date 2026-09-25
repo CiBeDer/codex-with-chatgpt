@@ -16,6 +16,39 @@ export interface CreateTaskOptions {
   iteration?: number;
 }
 
+export class TaskConflictError extends Error {
+  readonly code = "TASK_CONFLICT";
+  constructor(taskId: string) {
+    super(
+      `Task ${taskId} already exists with a different goal/plan. Wait for the existing task to finish or use a different task_id.`
+    );
+    this.name = "TaskConflictError";
+  }
+}
+
+function areArraysEqual(a?: string[], b?: string[]): boolean {
+  const arrA = a ?? [];
+  const arrB = b ?? [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (arrA[i] !== arrB[i]) return false;
+  }
+  return true;
+}
+
+export function isTaskPayloadEqual(
+  existing: TaskRecord,
+  opts: CreateTaskOptions
+): boolean {
+  if (existing.goal !== opts.goal) return false;
+  if (existing.plan !== opts.plan) return false;
+  if (!areArraysEqual(existing.tests, opts.tests)) return false;
+  if (opts.iteration !== undefined && opts.iteration !== existing.iteration) {
+    return false;
+  }
+  return true;
+}
+
 export interface TaskManagerOptions {
   workspaceId?: string;
   workspacePath?: string;
@@ -42,6 +75,9 @@ export class TaskManager {
 
     if (existing) {
       if (existing.state === "CREATED" || existing.state === "RUNNING") {
+        if (!isTaskPayloadEqual(existing, opts)) {
+          throw new TaskConflictError(opts.taskId);
+        }
         // Do not overwrite existing in-progress task; return current record without state reset
         return existing;
       }

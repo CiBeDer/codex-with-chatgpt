@@ -83,3 +83,28 @@ describe("OpenCode config loader (Phase S5)", () => {
     expect(config.executionTimeoutMs).toBe(300_000);
   });
 });
+
+import { resolveExecutionWaitMs } from "../src/mcp/server.js";
+
+describe("resolveExecutionWaitMs (Phase S7)", () => {
+  it("uses explicit positive integer when provided", () => {
+    expect(resolveExecutionWaitMs(5000)).toBe(5000);
+    expect(resolveExecutionWaitMs(120000, "5000")).toBe(120000);
+  });
+
+  it("parses valid positive integer from environment string", () => {
+    expect(resolveExecutionWaitMs(undefined, "5000")).toBe(5000);
+    expect(resolveExecutionWaitMs(undefined, " 15000 ")).toBe(15000);
+  });
+
+  it("falls back to 600000 on invalid, non-positive or non-integer values", () => {
+    expect(resolveExecutionWaitMs(undefined, undefined)).toBe(600000);
+    expect(resolveExecutionWaitMs(undefined, "")).toBe(600000);
+    expect(resolveExecutionWaitMs(undefined, "abc")).toBe(600000);
+    expect(resolveExecutionWaitMs(undefined, "0")).toBe(600000);
+    expect(resolveExecutionWaitMs(undefined, "-1")).toBe(600000);
+    expect(resolveExecutionWaitMs(undefined, "12.34")).toBe(600000);
+    expect(resolveExecutionWaitMs(-5)).toBe(600000);
+    expect(resolveExecutionWaitMs(0)).toBe(600000);
+  });
+});

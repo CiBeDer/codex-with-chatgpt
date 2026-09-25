@@ -37,6 +37,9 @@ function fail(code: string, message: string): ToolResult {
 
 function mapError(error: unknown): ToolResult {
   if (error instanceof WorkspaceError) return fail(error.code, error.message);
+  if (error && typeof error === "object" && (error as any).code === "TASK_CONFLICT") {
+    return fail("TASK_CONFLICT", (error as any).message);
+  }
   return fail("INTERNAL_ERROR", error instanceof Error ? error.message : String(error));
 }
 
@@ -187,14 +190,29 @@ export interface McpContext {
   executionWaitMs?: number;
 }
 
+export function resolveExecutionWaitMs(
+  explicit?: number,
+  rawEnv?: string
+): number {
+  if (explicit !== undefined && Number.isInteger(explicit) && explicit > 0) {
+    return explicit;
+  }
+  if (rawEnv !== undefined && rawEnv !== null && rawEnv.trim() !== "") {
+    const parsed = Number(rawEnv.trim());
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 600000;
+}
+
 export function createMcpServer(ctx: McpContext): McpServer {
   const { workspace } = ctx;
   const taskManager = ctx.taskManager ?? new TaskManager();
-  const executionWaitMs =
-    ctx.executionWaitMs ??
-    (process.env.C2C_EXECUTION_WAIT_MS
-      ? parseInt(process.env.C2C_EXECUTION_WAIT_MS, 10)
-      : 600000);
+  const executionWaitMs = resolveExecutionWaitMs(
+    ctx.executionWaitMs,
+    process.env.C2C_EXECUTION_WAIT_MS
+  );
   const server = new McpServer(
     { name: PRODUCT_NAME, version: VERSION },
     { capabilities: { tools: {} }, instructions: UNTRUSTED_NOTE }

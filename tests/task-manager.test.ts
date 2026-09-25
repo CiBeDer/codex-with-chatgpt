@@ -355,12 +355,12 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
     const p1 = manager.execute("taskA");
     await new Promise((r) => setTimeout(r, 10));
 
-    // While taskA is RUNNING, try create taskA again
+    // While taskA is RUNNING, try create taskA again with same payload (idempotent)
     const createdWhileRunning = await manager.create({
       taskId: "taskA",
       workspacePath: "/repo/test",
-      goal: "New Goal",
-      plan: "New Plan",
+      goal: "Goal",
+      plan: "Plan",
     });
     // Should NOT reset to CREATED
     expect(createdWhileRunning.state).toBe("RUNNING");
@@ -650,6 +650,104 @@ describe("TaskManager (Phase R2 persistent executor session ownership)", () => {
       });
 
       await Promise.all([p1, p2]);
+    });
+  });
+
+  describe("task payload conflict checks (Phase S7)", () => {
+    it("returns existing task if CREATED with identical payload (idempotent)", async () => {
+      const manager = new TaskManager({ store });
+      const t1 = await manager.create({
+        taskId: "task_idem_1",
+        workspacePath: "/repo/test",
+        goal: "Same goal",
+        plan: "Same plan",
+        tests: ["test 1"],
+      });
+
+      const t2 = await manager.create({
+        taskId: "task_idem_1",
+        workspacePath: "/repo/test",
+        goal: "Same goal",
+        plan: "Same plan",
+        tests: ["test 1"],
+      });
+
+      expect(t1.taskId).toBe(t2.taskId);
+      expect(t1.createdAt).toBe(t2.createdAt);
+    });
+
+    it("throws TaskConflictError if CREATED with different plan or goal", async () => {
+      const manager = new TaskManager({ store });
+      await manager.create({
+        taskId: "task_conflict_create",
+        workspacePath: "/repo/test",
+        goal: "Goal 1",
+        plan: "Plan 1",
+      });
+
+      await expect(
+        manager.create({
+          taskId: "task_conflict_create",
+          workspacePath: "/repo/test",
+          goal: "Goal 1",
+          plan: "Plan DIFFERENT",
+        })
+      ).rejects.toThrowError(/already exists with a different goal\/plan/);
+    });
+
+    it("returns existing task if RUNNING with identical payload (idempotent)", async () => {
+      store.save({
+        version: 1,
+        taskId: "task_running_idem",
+        workspaceId: "ws_test_mgr",
+        workspacePath: "/repo/test",
+        goal: "Run goal",
+        plan: "Run plan",
+        iteration: 1,
+        state: "RUNNING",
+        executorSessionId: "ses_123",
+        executor: "opencode",
+        createdAt: 1000,
+      });
+
+      const manager = new TaskManager({ store });
+      const rec = await manager.create({
+        taskId: "task_running_idem",
+        workspacePath: "/repo/test",
+        goal: "Run goal",
+        plan: "Run plan",
+      });
+
+      expect(rec.state).toBe("RUNNING");
+      expect(rec.executorSessionId).toBe("ses_123");
+    });
+
+    it("throws TaskConflictError if RUNNING with different goal or tests", async () => {
+      store.save({
+        version: 1,
+        taskId: "task_running_diff",
+        workspaceId: "ws_test_mgr",
+        workspacePath: "/repo/test",
+        goal: "Run goal",
+        plan: "Run plan",
+        tests: ["test A"],
+        iteration: 1,
+        state: "RUNNING",
+        executorSessionId: "ses_123",
+        executor: "opencode",
+        createdAt: 1000,
+      });
+
+      const manager = new TaskManager({ store });
+      await expect(
+        manager.create({
+          taskId: "task_running_diff",
+          workspacePath: "/repo/test",
+          goal: "Run goal",
+          plan: "Run plan",
+          tests: ["test DIFFERENT"],
+        })
+      ).rejects.toThrowError(/already exists with a different goal\/plan/);
     });
   });
 });

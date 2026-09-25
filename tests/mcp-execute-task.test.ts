@@ -136,4 +136,37 @@ describe("MCP execute_task (Phase 8)", () => {
     expect(data.state).toBe("RUNNING");
     expect(data.message).toContain("task_status");
   });
+
+  it("handles TASK_CONFLICT error gracefully when submitting different payload for existing task", async () => {
+    const mockTaskManager: Partial<TaskManager> = {
+      create: async (opts) => {
+        const error = new Error(
+          `Task ${opts.taskId} already exists with a different goal/plan. Wait for the existing task to finish or use a different task_id.`
+        );
+        (error as any).code = "TASK_CONFLICT";
+        throw error;
+      },
+    };
+
+    const server = createMcpServer({
+      workspace,
+      logger: nullLogger,
+      taskManager: mockTaskManager as TaskManager,
+    });
+    const tool = (server as any)._registeredTools["execute_task"];
+
+    const res = await tool.handler(
+      {
+        task_id: "task_conflict_1",
+        goal: "Different goal",
+        plan: "Different plan",
+      },
+      { authInfo: { scopes: ["execution.submit"] } }
+    );
+
+    expect(res.isError).toBe(true);
+    const parsed = JSON.parse(res.content[0].text);
+    expect(parsed.error).toBe("TASK_CONFLICT");
+    expect(parsed.message).toContain("Task task_conflict_1 already exists with a different goal/plan");
+  });
 });
