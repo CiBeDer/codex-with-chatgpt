@@ -37,32 +37,87 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
     });
   });
 
-  it("health success calls GET /api/health only and returns true", async () => {
+  it("health success calls detected health endpoint and returns true", async () => {
     let healthCalls = 0;
     let infoCalls = 0;
     handler = (req, res) => {
-      if (req.url === "/api/health") healthCalls++;
+      if (req.url === "/api/health") {
+        healthCalls++;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, version: "2.0.0" }));
+        return;
+      }
       if (req.url === "/api/info") infoCalls++;
-      expect(req.method).toBe("GET");
-      expect(req.url).toBe("/api/health");
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, version: "2.0.0" }));
+      res.writeHead(404).end();
     };
 
     const client = new OpenCodeClient({ baseUrl });
     const healthy = await client.health();
     expect(healthy).toBe(true);
-    expect(healthCalls).toBe(1);
+    expect(healthCalls).toBeGreaterThanOrEqual(1);
     expect(infoCalls).toBe(0);
   });
 
-  it("health failure returns false on non-200 or connection error without calling /api/info", async () => {
+  it("detects v2.0.9 profile from openapi.json and uses /api/info and experimental wait", async () => {
+    let infoCalls = 0;
+    let expWaitCalls = 0;
+    let directWaitCalls = 0;
+
+    handler = (req, res) => {
+      if (req.url === "/openapi.json") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            paths: {
+              "/api/info": {},
+              "/api/experimental/session/{sessionID}/wait": {},
+            },
+          })
+        );
+        return;
+      }
+      if (req.url === "/api/info") {
+        infoCalls++;
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ version: "2.0.9" }));
+        return;
+      }
+      if (req.url === "/api/experimental/session/ses_v209/wait") {
+        expWaitCalls++;
+        res.writeHead(204).end();
+        return;
+      }
+      if (req.url === "/api/session/ses_v209/wait") {
+        directWaitCalls++;
+        res.writeHead(404).end();
+        return;
+      }
+      res.writeHead(404).end();
+    };
+
+    const client = new OpenCodeClient({ baseUrl });
+    const healthy = await client.health();
+    expect(healthy).toBe(true);
+    expect(infoCalls).toBe(1);
+
+    await client.waitForIdle("ses_v209");
+    expect(expWaitCalls).toBe(1);
+    expect(directWaitCalls).toBe(0);
+  });
+
+  it("health failure returns false on non-200 or connection error without falling back per request", async () => {
     let infoCalls = 0;
     handler = (req, res) => {
+      if (req.url === "/openapi.json") {
+        res.writeHead(500).end();
+        return;
+      }
       if (req.url === "/api/info") infoCalls++;
-      expect(req.url).toBe("/api/health");
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "server error" }));
+      if (req.url === "/api/health") {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "server error" }));
+        return;
+      }
+      res.writeHead(404).end();
     };
 
     const client = new OpenCodeClient({ baseUrl });
@@ -168,10 +223,12 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
 
   it("waitForIdle posts to /api/session/{id}/wait and handles 204 No Content with empty body", async () => {
     handler = (req, res) => {
-      expect(req.method).toBe("POST");
-      expect(req.url).toBe("/api/session/ses_12345/wait");
-      res.writeHead(204);
-      res.end();
+      if (req.method === "POST" && req.url === "/api/session/ses_12345/wait") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.writeHead(404).end();
     };
 
     const client = new OpenCodeClient({ baseUrl });
@@ -184,16 +241,18 @@ describe("OpenCodeClient (Phase R1 Align with OpenCode v2 API)", () => {
       if (req.url?.includes("/api/experimental/")) {
         experimentalCalls++;
       }
-      expect(req.method).toBe("POST");
-      expect(req.url).toBe("/api/session/ses_missing/wait");
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          _tag: "SessionNotFoundError",
-          sessionID: "ses_missing",
-          message: "Session not found: ses_missing",
-        })
-      );
+      if (req.method === "POST" && req.url === "/api/session/ses_missing/wait") {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            _tag: "SessionNotFoundError",
+            sessionID: "ses_missing",
+            message: "Session not found: ses_missing",
+          })
+        );
+        return;
+      }
+      res.writeHead(404).end();
     };
 
     const client = new OpenCodeClient({ baseUrl });

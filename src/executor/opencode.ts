@@ -67,6 +67,21 @@ export interface ParsedAssistantResult {
   };
 }
 
+export interface OpenCodeApiProfile {
+  healthPath: string;
+  waitPath(sessionId: string): string;
+}
+
+const DEFAULT_PROFILE_V2: OpenCodeApiProfile = {
+  healthPath: "/api/health",
+  waitPath: (sessionId: string) => `/api/session/${encodeURIComponent(sessionId)}/wait`,
+};
+
+const LEGACY_V209_PROFILE: OpenCodeApiProfile = {
+  healthPath: "/api/info",
+  waitPath: (sessionId: string) => `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
+};
+
 export function parseLatestCompletedAssistant(
   messages: OpenCodeContextMessage[]
 ): ParsedAssistantResult {
@@ -206,9 +221,48 @@ export class OpenCodeClient {
     }
   }
 
+  private profile: OpenCodeApiProfile | null = null;
+  private profilePromise: Promise<OpenCodeApiProfile> | null = null;
+
+  async getApiProfile(): Promise<OpenCodeApiProfile> {
+    if (this.profile) return this.profile;
+    if (this.profilePromise) return this.profilePromise;
+
+    this.profilePromise = (async () => {
+      try {
+        const openApi = await this.request<any>("GET", "/openapi.json", undefined, 500);
+        if (openApi && typeof openApi === "object" && openApi.paths) {
+          const paths = Object.keys(openApi.paths);
+          const hasApiHealth = paths.includes("/api/health");
+          const hasDirectWait = paths.includes("/api/session/{sessionID}/wait");
+          const hasExperimentalWait = paths.includes("/api/experimental/session/{sessionID}/wait");
+
+          const healthPath = hasApiHealth ? "/api/health" : "/api/info";
+          const waitPath = (sessionId: string) =>
+            hasDirectWait
+              ? `/api/session/${encodeURIComponent(sessionId)}/wait`
+              : hasExperimentalWait
+                ? `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`
+                : `/api/session/${encodeURIComponent(sessionId)}/wait`;
+
+          this.profile = { healthPath, waitPath };
+          return this.profile;
+        }
+      } catch {
+        // Fallback to default
+      }
+
+      this.profile = DEFAULT_PROFILE_V2;
+      return this.profile;
+    })();
+
+    return this.profilePromise;
+  }
+
   async health(): Promise<boolean> {
     try {
-      await this.request<{ ok?: boolean }>("GET", "/api/health", undefined, 5000);
+      const profile = await this.getApiProfile();
+      await this.request<any>("GET", profile.healthPath, undefined, 5000);
       return true;
     } catch {
       return false;
@@ -241,9 +295,10 @@ export class OpenCodeClient {
   }
 
   async waitForIdle(sessionId: string, timeoutMs?: number): Promise<void> {
+    const profile = await this.getApiProfile();
     await this.request<void>(
       "POST",
-      `/api/session/${encodeURIComponent(sessionId)}/wait`,
+      profile.waitPath(sessionId),
       undefined,
       timeoutMs ?? this.executionTimeoutMs
     );
