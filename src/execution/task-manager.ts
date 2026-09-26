@@ -20,7 +20,7 @@ export class TaskConflictError extends Error {
   readonly code = "TASK_CONFLICT";
   constructor(taskId: string) {
     super(
-      `Task ${taskId} already exists with a different goal/plan. Wait for the existing task to finish or use a different task_id.`
+      `Task ${taskId} already exists with a different payload. Use a different task_id, or explicitly submit the next iteration after the current task reaches a terminal state.`
     );
     this.name = "TaskConflictError";
   }
@@ -83,13 +83,18 @@ export class TaskManager {
       }
 
       // Terminal states: COMPLETED / FAILED / CANCELLED
-      const expectedIteration = existing.iteration + 1;
-      if (opts.iteration !== undefined) {
-        if (opts.iteration !== expectedIteration) {
-          throw new Error(
-            `Invalid iteration: expected ${expectedIteration}, got ${opts.iteration}`
-          );
+      if (opts.iteration === undefined) {
+        if (isTaskPayloadEqual(existing, opts)) {
+          return existing;
         }
+        throw new TaskConflictError(opts.taskId);
+      }
+
+      const expectedIteration = existing.iteration + 1;
+      if (opts.iteration !== expectedIteration) {
+        throw new Error(
+          `Invalid iteration: expected ${expectedIteration}, got ${opts.iteration}`
+        );
       }
 
       const nextRecord: TaskRecord = {
@@ -142,6 +147,23 @@ export class TaskManager {
     const record = this.store.get(taskId);
     if (!record) {
       return Promise.reject(new Error(`Task not found: ${taskId}`));
+    }
+
+    if (
+      record.state === "COMPLETED" ||
+      record.state === "FAILED" ||
+      record.state === "CANCELLED"
+    ) {
+      return Promise.resolve({
+        taskId: record.taskId,
+        executorSessionId: record.executorSessionId,
+        state: record.state,
+        summary: record.summary,
+        error: record.error,
+        changedFiles: [],
+        startedAt: record.startedAt ?? record.createdAt,
+        finishedAt: record.finishedAt,
+      });
     }
 
     if (record.state === "RUNNING") {

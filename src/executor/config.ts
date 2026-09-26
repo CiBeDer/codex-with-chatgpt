@@ -19,6 +19,9 @@ export function parsePositiveIntEnv(
 export function isValidLoopbackUrl(urlStr: string): boolean {
   try {
     const parsed = new URL(urlStr);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
     const host = parsed.hostname.toLowerCase();
     return (
       host === "127.0.0.1" ||
@@ -45,8 +48,9 @@ export function loadOpenCodeConfig(
     }
   }
 
-  const username = env.C2C_OPENCODE_USERNAME?.trim() || undefined;
   const password = env.C2C_OPENCODE_PASSWORD || undefined;
+  const username =
+    env.C2C_OPENCODE_USERNAME?.trim() || (password ? "opencode" : undefined);
   const agent = env.C2C_OPENCODE_AGENT?.trim() || undefined;
   const providerId = env.C2C_OPENCODE_PROVIDER_ID?.trim() || undefined;
   const modelId = env.C2C_OPENCODE_MODEL_ID?.trim() || undefined;
@@ -58,7 +62,7 @@ export function loadOpenCodeConfig(
   );
   const executionTimeoutMs = parsePositiveIntEnv(
     env.C2C_OPENCODE_EXECUTION_TIMEOUT_MS,
-    300_000
+    3_600_000
   );
 
   return {
