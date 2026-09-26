@@ -40,6 +40,9 @@ function mapError(error: unknown): ToolResult {
   if (error && typeof error === "object" && (error as any).code === "TASK_CONFLICT") {
     return fail("TASK_CONFLICT", (error as any).message);
   }
+  if (error && typeof error === "object" && (error as any).code === "INVALID_ITERATION") {
+    return fail("INVALID_ITERATION", (error as any).message);
+  }
   return fail("INTERNAL_ERROR", error instanceof Error ? error.message : String(error));
 }
 

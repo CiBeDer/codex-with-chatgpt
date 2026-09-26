@@ -26,6 +26,15 @@ export class TaskConflictError extends Error {
   }
 }
 
+export class TaskIterationError extends Error {
+  readonly code = "INVALID_ITERATION";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskIterationError";
+  }
+}
+
 function areArraysEqual(a?: string[], b?: string[]): boolean {
   const arrA = a ?? [];
   const arrB = b ?? [];
@@ -99,7 +108,7 @@ export class TaskManager {
 
       const expectedIteration = existing.iteration + 1;
       if (opts.iteration !== expectedIteration) {
-        throw new Error(
+        throw new TaskIterationError(
           `Invalid iteration: expected ${expectedIteration}, got ${opts.iteration}`
         );
       }
@@ -125,7 +134,7 @@ export class TaskManager {
 
     // New task
     if (opts.iteration !== undefined && opts.iteration !== 1) {
-      throw new Error(`Invalid iteration for new task: expected 1, got ${opts.iteration}`);
+      throw new TaskIterationError(`Invalid iteration for new task: expected 1, got ${opts.iteration}`);
     }
 
     const record: TaskRecord = {
