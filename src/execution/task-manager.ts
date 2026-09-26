@@ -90,6 +90,13 @@ export class TaskManager {
         throw new TaskConflictError(opts.taskId);
       }
 
+      if (opts.iteration === existing.iteration) {
+        if (isTaskPayloadEqual(existing, opts)) {
+          return existing;
+        }
+        throw new TaskConflictError(opts.taskId);
+      }
+
       const expectedIteration = existing.iteration + 1;
       if (opts.iteration !== expectedIteration) {
         throw new Error(
