@@ -371,11 +371,7 @@ export class TaskManager {
 
     (async () => {
       try {
-        const resumeFn = this.executor.resume
-          ? this.executor.resume.bind(this.executor)
-          : this.executor.execute.bind(this.executor);
-
-        const result = await resumeFn(executionReq, sessionId);
+        const result = await this.executor.resume(executionReq, sessionId);
         const finalRes = await this.finalizeExecution(record, result, sessionId, startedAt);
         resolvePromise(finalRes);
       } catch (err: any) {

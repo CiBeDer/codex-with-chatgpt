@@ -12,7 +12,7 @@ export interface Executor {
     sessionId: string
   ): Promise<ExecutionResult>;
 
-  resume?(
+  resume(
     request: ExecutionRequest,
     sessionId: string
   ): Promise<ExecutionResult>;
