@@ -407,7 +407,6 @@ export class TaskManager {
         const errMsg = err instanceof Error ? err.message : String(err);
         const isSessionNotFound =
           errMsg.includes("SessionNotFoundError") ||
-          errMsg.includes("404") ||
           errMsg.toLowerCase().includes("session not found");
 
         if (isSessionNotFound) {
