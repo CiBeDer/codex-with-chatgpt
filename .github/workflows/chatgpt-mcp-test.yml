@@ -1,0 +1,17 @@
+name: ChatGPT MCP Test
+
+on:
+  push:
+    branches:
+      - chatgpt-mcp-write-test-20260926
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm GitHub Actions execution
+        run: |
+          echo "C2C_GITHUB_ACTIONS_OK"
+          echo "branch=${{ github.ref_name }}"
+          echo "sha=${{ github.sha }}"
