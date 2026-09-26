@@ -534,10 +534,14 @@ export function createMcpServer(ctx: McpContext): McpServer {
         });
 
         if (record.state === "RUNNING") {
+          void taskManager.execute(args.task_id).catch((err) => {
+            logger.warn({ err, taskId: args.task_id }, "Background retry of running task execution failed");
+          });
+
           return okStructured({
             task_id: args.task_id,
             state: "RUNNING",
-            message: "Task is already running. Call task_status.",
+            message: "Task is already running or recovery has been resumed. Call task_status.",
           });
         }
 
