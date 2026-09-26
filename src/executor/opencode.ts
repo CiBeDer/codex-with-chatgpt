@@ -72,15 +72,12 @@ export interface OpenCodeApiProfile {
   waitPath(sessionId: string): string;
 }
 
-const DEFAULT_PROFILE_V2: OpenCodeApiProfile = {
-  healthPath: "/api/health",
-  waitPath: (sessionId: string) => `/api/session/${encodeURIComponent(sessionId)}/wait`,
-};
-
-const LEGACY_V209_PROFILE: OpenCodeApiProfile = {
-  healthPath: "/api/info",
-  waitPath: (sessionId: string) => `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`,
-};
+export class OpenCodeApiUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OpenCodeApiUnsupportedError";
+  }
+}
 
 export function parseLatestCompletedAssistant(
   messages: OpenCodeContextMessage[]
@@ -230,30 +227,48 @@ export class OpenCodeClient {
 
     this.profilePromise = (async () => {
       try {
-        const openApi = await this.request<any>("GET", "/openapi.json", undefined, 500);
-        if (openApi && typeof openApi === "object" && openApi.paths) {
-          const paths = Object.keys(openApi.paths);
-          const hasApiHealth = paths.includes("/api/health");
-          const hasDirectWait = paths.includes("/api/session/{sessionID}/wait");
-          const hasExperimentalWait = paths.includes("/api/experimental/session/{sessionID}/wait");
-
-          const healthPath = hasApiHealth ? "/api/health" : "/api/info";
-          const waitPath = (sessionId: string) =>
-            hasDirectWait
-              ? `/api/session/${encodeURIComponent(sessionId)}/wait`
-              : hasExperimentalWait
-                ? `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`
-                : `/api/session/${encodeURIComponent(sessionId)}/wait`;
-
-          this.profile = { healthPath, waitPath };
-          return this.profile;
+        const openApi = await this.request<any>("GET", "/openapi.json", undefined, 5000);
+        if (!openApi || typeof openApi !== "object" || !openApi.paths) {
+          throw new OpenCodeApiUnsupportedError(
+            "OpenCode API is unsupported: /openapi.json missing or invalid"
+          );
         }
-      } catch {
-        // Fallback to default
-      }
 
-      this.profile = DEFAULT_PROFILE_V2;
-      return this.profile;
+        const paths = Object.keys(openApi.paths);
+        const hasApiHealth = paths.includes("/api/health");
+        const hasApiInfo = paths.includes("/api/info");
+        const hasDirectWait = paths.includes("/api/session/{sessionID}/wait");
+        const hasExperimentalWait = paths.includes("/api/experimental/session/{sessionID}/wait");
+
+        let healthPath: string;
+        if (hasApiHealth) {
+          healthPath = "/api/health";
+        } else if (hasApiInfo) {
+          healthPath = "/api/info";
+        } else {
+          throw new OpenCodeApiUnsupportedError(
+            "OpenCode API is unsupported: neither /api/health nor /api/info is present in /openapi.json"
+          );
+        }
+
+        let waitPath: (sessionId: string) => string;
+        if (hasDirectWait) {
+          waitPath = (sessionId: string) => `/api/session/${encodeURIComponent(sessionId)}/wait`;
+        } else if (hasExperimentalWait) {
+          waitPath = (sessionId: string) => `/api/experimental/session/${encodeURIComponent(sessionId)}/wait`;
+        } else {
+          throw new OpenCodeApiUnsupportedError(
+            "OpenCode API is unsupported: no supported session wait endpoint is present in /openapi.json"
+          );
+        }
+
+        this.profile = { healthPath, waitPath };
+        return this.profile;
+      } catch (err) {
+        this.profile = null;
+        this.profilePromise = null;
+        throw err;
+      }
     })();
 
     return this.profilePromise;
