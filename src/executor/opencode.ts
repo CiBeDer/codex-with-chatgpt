@@ -407,72 +407,60 @@ export class OpenCodeExecutor implements Executor {
     sessionId: string,
     startedAt: number
   ): Promise<ExecutionResult> {
-    try {
-      await this.client.waitForIdle(sessionId);
+    await this.client.waitForIdle(sessionId);
 
-      const contextRes = await this.client.getContext(sessionId);
-      const parsedAssistant = parseLatestCompletedAssistant(contextRes.data);
+    const contextRes = await this.client.getContext(sessionId);
+    const parsedAssistant = parseLatestCompletedAssistant(contextRes.data);
 
-      if (!parsedAssistant.found || !parsedAssistant.completed) {
-        return {
-          taskId: request.taskId,
-          executorSessionId: sessionId,
-          state: "FAILED",
-          error: "No completed assistant message found after OpenCode session became idle",
-          changedFiles: [],
-          startedAt,
-          finishedAt: Date.now(),
-        };
-      }
-
-      if (parsedAssistant.error) {
-        const typePrefix = parsedAssistant.error.type ? `${parsedAssistant.error.type}: ` : "";
-        return {
-          taskId: request.taskId,
-          executorSessionId: sessionId,
-          state: "FAILED",
-          error: `${typePrefix}${parsedAssistant.error.message}`,
-          changedFiles: [],
-          startedAt,
-          finishedAt: Date.now(),
-        };
-      }
-
-      if (parsedAssistant.finish === "error" || parsedAssistant.finish === "content-filter") {
-        return {
-          taskId: request.taskId,
-          executorSessionId: sessionId,
-          state: "FAILED",
-          error:
-            parsedAssistant.finish === "content-filter"
-              ? "OpenCode assistant execution was blocked by content-filter"
-              : "OpenCode assistant finished with error",
-          changedFiles: [],
-          startedAt,
-          finishedAt: Date.now(),
-        };
-      }
-
-      return {
-        taskId: request.taskId,
-        executorSessionId: sessionId,
-        state: "COMPLETED",
-        summary: parsedAssistant.text,
-        changedFiles: [],
-        startedAt,
-        finishedAt: Date.now(),
-      };
-    } catch (err: any) {
+    if (!parsedAssistant.found || !parsedAssistant.completed) {
       return {
         taskId: request.taskId,
         executorSessionId: sessionId,
         state: "FAILED",
-        error: err instanceof Error ? err.message : String(err),
+        error: "No completed assistant message found after OpenCode session became idle",
         changedFiles: [],
         startedAt,
         finishedAt: Date.now(),
       };
     }
+
+    if (parsedAssistant.error) {
+      const typePrefix = parsedAssistant.error.type ? `${parsedAssistant.error.type}: ` : "";
+      return {
+        taskId: request.taskId,
+        executorSessionId: sessionId,
+        state: "FAILED",
+        error: `${typePrefix}${parsedAssistant.error.message}`,
+        changedFiles: [],
+        startedAt,
+        finishedAt: Date.now(),
+      };
+    }
+
+    if (parsedAssistant.finish === "error" || parsedAssistant.finish === "content-filter") {
+      return {
+        taskId: request.taskId,
+        executorSessionId: sessionId,
+        state: "FAILED",
+        error:
+          parsedAssistant.finish === "content-filter"
+            ? "OpenCode assistant execution was blocked by content-filter"
+            : "OpenCode assistant finished with error",
+        changedFiles: [],
+        startedAt,
+        finishedAt: Date.now(),
+      };
+    }
+
+    return {
+      taskId: request.taskId,
+      executorSessionId: sessionId,
+      state: "COMPLETED",
+      summary: parsedAssistant.text,
+      changedFiles: [],
+      startedAt,
+      finishedAt: Date.now(),
+    };
   }
 
   async execute(request: ExecutionRequest, sessionId: string): Promise<ExecutionResult> {
